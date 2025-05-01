@@ -24,23 +24,22 @@ max_p = 2157000 # W (max power)
 min_p = max_p # W (min power)
 
 # Distance discretization
-distance_remaining = 38500 # (m) Length between Substation 1 and Substation 2
-time_remaining = 24 * 60 # (sec) From Substation 1 to Substation 2
+total_distance = 38500 # (m) Length between Substation 1 and Substation 2
+total_time = 24 * 60 # (sec) From Substation 1 to Substation 2
 delta_s = 250  # Distance step in meters
 
 # Time-dependent parameters
-max_p_sub1 = 3157000 # W (max power for substation 1)
-max_p_sub2 = 3157000 # W (max power for substation 2)
+max_p_sub1 = 0.5 * 1000000 # W (max power for substation 1)
+max_p_sub2 = 1.0 * 1000000 # W (max power for substation 2)
 # WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
 WindSpeed = 2.5
 
 # Initialize initial conditions
-v_init = 0
-Pm_init = 0
-Pn_init = 0
-P_sub1_init = 0
-P_sub2_init = 0
-t_init = 0
+v_init = 0 / 3.6 # (Enter in km/h) Initial velocity (m/s)
+t_init = 0 * 60 # Initial time (s)
+d_init = 0 * 1000 # Initial distance (m)
+time_remaining = total_time - t_init # Remaining time (s)
+distance_remaining = total_distance - d_init # Remaining distance (m)
 
 # Generate random gradients for the track profile
 # max_gradient = 0.0015  # Maximum gradient (0.15%)
@@ -63,7 +62,7 @@ for i in range(1, num_steps):
     distance = i * delta_s
     data[distance] = {'grade': gradients[min(i, len(gradients) - 1)],}
 
-def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed):
+def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init):
     D = data.keys()  # Distance steps
     model0 = pyomo.ConcreteModel()
     model0.v = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_v))  # Velocity (m/s)
@@ -73,7 +72,7 @@ def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpee
     
     final_distance = list(D)[-1]
     # model0.cons.add(model0.s[final_time] == distance_remaining)
-    model0.v[0].fix(0)  # Initial velocity is 0
+    model0.v[0].fix(v_init)  # Initial velocity is 0
     model0.v[final_distance].fix(0)  # Final velocity is 0
     model0.P[0].fix(0)
 
@@ -101,9 +100,9 @@ def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpee
         sys.exit()
     return v_opt, P_opt
 
-def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed):
+def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2):
     start_train = time.time()
-    v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed)
+    v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init)
     D = data.keys()
     
     model = pyomo.ConcreteModel()
@@ -125,7 +124,7 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     final_distance = list(D)[-1]
         
     # Initial conditions
-    model.v[0].fix(0)
+    model.v[0].fix(v_init)
     model.Pn[0].fix(0)
     model.v[final_distance].fix(0)
     model.t[final_distance].fix(time_remaining)
@@ -381,7 +380,7 @@ def calculate_energy_consumption(model, data, delta_t):
         total_energy += (model.P[d]() * delta_t) / 3.6e6 
     return total_energy
 
-model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed)
+model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2)
 end_time = time.time()
 if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
     # Save results to file
