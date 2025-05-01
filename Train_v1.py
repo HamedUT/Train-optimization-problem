@@ -1,25 +1,21 @@
 import pyomo.environ as pyomo
 
 data = {
-    '00:00': {'v_avg' : 100, 't_prev' : ''}, # km/h
-    '00:01': {'v_avg' : 100, 't_prev' : '00:00'},
-    '00:02': {'v_avg' : 100, 't_prev' : '00:01'},
-    '00:03': {'v_avg' : 100, 't_prev' : '00:02'},
-    '00:04': {'v_avg' : 100, 't_prev' : '00:03'},
-    '00:05': {'v_avg' : 120, 't_prev' : '00:04'},
-    '00:06': {'v_avg' : 120, 't_prev' : '00:05'},
-    '00:07': {'v_avg' : 120, 't_prev' : '00:06'},
-    '00:08': {'v_avg' : 120, 't_prev' : '00:07'},
-    '00:09': {'v_avg' : 120, 't_prev' : '00:08'},
+    f'{m:02d}:{s:02d}': {
+        'v_avg': 120,
+        't_prev': '' if m == 0 and s == 0 else f'{m:02d}:{(s-1):02d}'
+    }
+    for m in [0]
+    for s in range(61)
 }
 
 rho_1 = 0.03 # Ohms/km
 rho_2 = 0.05 # Ohms/km
 S = 10 # km
 V0 = 1500 # V
-delta_t = 1/60 # hours
+delta_t = 1/3600 # hours
 bs_constant = 0.01 # km/h / kW
-max_acc = 3 # km/h
+max_acc = 3 # km/h/s
 
 def train_example(rho_1, rho_2, S, V0, delta_t, bs_constant, max_acc,data):
     # Sets
@@ -49,7 +45,7 @@ def train_example(rho_1, rho_2, S, V0, delta_t, bs_constant, max_acc,data):
         model.cons.add(model.P[t] == bs_constant * model.v[t]) # Nonsense
         model.cons.add(model.v[t] == model.s[t] / delta_t)
     # Initial conditions
-    model.cons.add(model.v['00:00'] == 1) # cant be 0, because we set it to nonnegativereals
+    model.cons.add(model.v['00:00'] == 1)
     
     for t in T:
         model.cons.add(model.s[t] <= S)
@@ -64,7 +60,7 @@ def train_example(rho_1, rho_2, S, V0, delta_t, bs_constant, max_acc,data):
 
     # Display results
     for t in data.keys():
-        print('  ', t, ':', model.v[t](), 'km/h')
+        print('  ', t, ':', model.v[t](), 'km/h','  ', model.s[t](), 'km')
     print('Value of O.F. = ', model.of())
 
 train_example(rho_1, rho_2, S, V0, delta_t, bs_constant, max_acc,data)
