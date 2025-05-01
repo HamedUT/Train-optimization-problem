@@ -1,7 +1,10 @@
+# Added P of substations as variables in the model. Also added braking_eff when writing to the txt file for further plot comparison. because when braking, all of the power is not going back to the grid
+
 import pyomo.environ as pyomo
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
+import os
 
 # Electrical Parameters
 rho_1 = 0.00003 # Ohms/m
@@ -14,14 +17,17 @@ A = 3.020*4.670 # m^2 (Frontal area)
 C = 0.002 # (Rolling resistance coefficient)
 max_p = 2157000 # W (max power)
 min_p = max_p * 2 # W (min power)
+max_p_sub1 = max_p * 1.0
+max_p_sub2 = max_p * 1
 eta = 0.893564 # Efficiency of the train's propulsion system
 C_d = 0.8 # (Drag coefficient)
-braking_eff = 0.0 # Regenerative braking efficiency
+braking_eff = 0.0 # Regenerative braking efficiency    
+# Also added braking_eff when writing to the txt file for further plot comparison. because when braking, all of the power is not going back to the grid
 max_v = 44.444 # m/s = 160 km/h (VIRM)
 max_acc = 0.768 # m/s2 (2.76 km/h/s) (VIRM)
 
 # Enviromental Variables
-total_time = 430 # (sec) From Substation 1 to Substation 2
+total_time = 600 # (sec) From Substation 1 to Substation 2
 S = 10000 # (m) Length between Substation 1 and Substation 2
 delta_t = 1 # Seconds
 theta = 0.004 # (Gradient)
@@ -80,7 +86,7 @@ def Initializer(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C
         sys.exit()
     return v_opt, P_opt
 
-def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, theta, eta, braking_eff):
+def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, theta, eta, braking_eff, max_p_sub1, max_p_sub2):
 
     v_opt, P_opt = Initializer(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, theta, eta, braking_eff)    
     T = data.keys()
@@ -91,10 +97,12 @@ def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, thet
     model.v = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0,max_v), initialize=lambda model0, t: v_opt[t]) # velocity (m/s)
 
     # State Variables
-    model.Pm = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0, max_p)) # Power consumption (kW)
-    model.Pn = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0, min_p)) # Power consumption (kW)
-    model.P = pyomo.Var(T, domain=pyomo.Reals, initialize=lambda model0, t: P_opt[t]) # Power consumption (kW)
-    model.s = pyomo.Var(T, domain=pyomo.NonNegativeReals) # Distance
+    model.Pm = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0, max_p)) 
+    model.Pn = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0, min_p)) 
+    model.P = pyomo.Var(T, domain=pyomo.Reals, initialize=lambda model0, t: P_opt[t])
+    model.P_sub1 = pyomo.Var(T, domain=pyomo.Reals, bounds=(-max_p_sub1, max_p_sub1)) 
+    model.P_sub2 = pyomo.Var(T, domain=pyomo.Reals, bounds=(-max_p_sub2, max_p_sub2))
+    model.s = pyomo.Var(T, domain=pyomo.NonNegativeReals) # Distance 
     # model.d = pyomo.Var(T, domain=pyomo.Binary)
     #model.V = pyomo.Var(T, domain=pyomo.NonNegativeReals, bounds=(0, V0-1)) # Voltage
     #model.R1 = pyomo.Var(T, domain=pyomo.NonNegativeReals) # Resistance branch 1
@@ -115,12 +123,16 @@ def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, thet
     model.P['00:00'].fix(0)
     model.Pm['00:00'].fix(0)
     model.Pn['00:00'].fix(0)
+    model.P_sub1['00:00'].fix(0)
+    model.P_sub2['00:00'].fix(0)
 
     for t in list(T)[1:]:
         model.cons.add(model.v[t] == (model.s[t] - model.s[data[t]['t_prev']]) / delta_t)
         model.cons.add((model.v[t] - model.v[data[t]['t_prev']])/delta_t <= max_acc)
         model.cons.add(-max_acc <= (model.v[t] - model.v[data[t]['t_prev']])/delta_t)
         model.cons.add(model.P[t] == model.Pm[t] - model.Pn[t])
+        model.cons.add(model.P_sub1[t] == model.P[t] * ((1e-09 + rho_2 * (S - model.s[t]))/(1e-09 + rho_1 * model.s[t] + rho_2 * (S - model.s[t]))))
+        model.cons.add(model.P_sub2[t] == model.P[t] * ((1e-09 + rho_1 * model.s[t])/(1e-09 + rho_1 * model.s[t] + rho_2 * (S - model.s[t]))))
         #model.cons.add(model.R1[t] == (rho_1) * model.s[t] + 0.000000000001)
         #model.cons.add(model.R2[t] == (rho_2) * (S - model.s[t]) + 0.000000000001)
         #model.cons.add(model.P[t] == model.V[t] * ((V0 - model.V[t])/(model.R1[t]) + (V0 - model.V[t])/(model.R2[t])))
@@ -153,7 +165,7 @@ def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, thet
     # solver.options['mu_init'] = 1e-1
 
     # Solve the model
-    results = solver.solve(model, tee=False)
+    results = solver.solve(model, tee=True)
 
 
     # Display resultsf"{number:.3f}"
@@ -171,15 +183,7 @@ def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, thet
             #print('  ', t, ':', f"{v_out:.2f}", 'km/h','  ', f"{s_out:.3f}", 'km','  ', f"{a_out:.2f}", 'km/h/s','  ', f"{p_out:.0f}", 'W','  ', f"{V_out:.1f}", 'Volts')
             print('  ', t, ':', f"{v_out:.2f}", 'km/h','  ', f"{s_out:.3f}", 'km','  ', f"{a_out:.4f}", 'm/s2','  ', f"{p_out:.6f}", 'MW')
     print('Value of O.F. = {:.3f} kWh'.format((model.of())/3600000*total_time))
-    
-    # save to file
-    # filename = f'velocity_output_t{total_time}_S{S}.txt'
-    # with open(filename, 'w') as f:
-    #     f.write("Time(s), Velocity(km/h)\n")  # Header
-    #     for t in data.keys():
-    #         v_out = 3.6*model.v[t]()
-    #         f.write(f"{t}, {v_out:.3f}\n")
-    
+     
     return model, results.solver.termination_condition  # Add return statement  # Add return statement
 
 def plot_velocity_profile(model, data):
@@ -280,8 +284,7 @@ def plot_Pm_and_Pn_profile(model, data):
     ax3.yaxis.grid(True, linestyle='--', alpha=0.7)
     ax1.xaxis.grid(True, linestyle='--', alpha=0.7)
     
-def plot_substation_powers(model, data, rho_1, rho_2, S):
-    """Calculate and plot power from each substation based on train position and total power"""
+def plot_substation_powers(model, data):
     times = []
     P_sub1_values = []
     P_sub2_values = []
@@ -290,25 +293,10 @@ def plot_substation_powers(model, data, rho_1, rho_2, S):
     for t in data.keys():
         minutes, seconds = map(int, t.split(':'))
         times.append(minutes*60 + seconds)
-        
-        # Calculate resistances based on position
-        R1 = rho_1 * model.s[t]()
-        R2 = rho_2 * (S - model.s[t]())
-        
-        # Calculate power split using voltage divider principle
-        P_total = model.P[t]()
-        if P_total > 0:  # Only split positive power
-            P_sub1 = P_total * (R2/(R1 + R2))
-            P_sub2 = P_total * (R1/(R1 + R2))
-        else:
-            P_sub1 = 0
-            P_sub2 = 0
-            
-        P_sub1_values.append(P_sub1/1000000)  # Convert to MW
-        P_sub2_values.append(P_sub2/1000000)  # Convert to MW
+        P_sub1_values.append(model.P_sub1[t]()/1000000)  # Convert to MW
+        P_sub2_values.append(model.P_sub2[t]()/1000000)  # Convert to MW
         distances.append(model.s[t]()/1000)  # Convert to km
     
-    # Create subplots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
     
     # Plot power vs time
@@ -316,7 +304,7 @@ def plot_substation_powers(model, data, rho_1, rho_2, S):
     ax1.plot(times, P_sub2_values, 'r-', label='Substation 2')
     ax1.set_xlabel('Time (seconds)')
     ax1.set_ylabel('Power (MW)')
-    ax1.set_title('Substation Power Profiles')
+    plt.title(f'Substations Power Profile (S={S/1000}km, Braking Efficiency={braking_eff:.0f})')
     ax1.grid(True, which='both', linestyle='--', alpha=0.7)
     ax1.legend()
     
@@ -325,30 +313,38 @@ def plot_substation_powers(model, data, rho_1, rho_2, S):
     ax2.plot(distances, P_sub2_values, 'r-', label='Substation 2')
     ax2.set_xlabel('Distance (km)')
     ax2.set_ylabel('Power (MW)')
-    ax2.set_title('Substation Power vs Distance')
+    plt.title(f'Substations Power Profile (S={S/1000}km, Braking Efficiency={braking_eff:.0f})')
     ax2.grid(True, which='both', linestyle='--', alpha=0.7)
     ax2.legend()
     
     plt.tight_layout()
-    
-    # Calculate total energy from each substation
-    E_sub1 = sum(p * delta_t for p in P_sub1_values) / 3600  # MWh
-    E_sub2 = sum(p * delta_t for p in P_sub2_values) / 3600  # MWh
-    
-    print(f"\nEnergy consumption summary:")
-    print(f"Substation 1: {E_sub1:.2f} MWh")
-    print(f"Substation 2: {E_sub2:.2f} MWh")
-    print(f"Total: {(E_sub1 + E_sub2):.2f} MWh")
 
-model, termination_condition = train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, theta, eta, braking_eff)
+model, termination_condition = train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, theta, eta, braking_eff, max_p_sub1, max_p_sub2)
 if termination_condition == pyomo.TerminationCondition.optimal or termination_condition == pyomo.TerminationCondition.locallyOptimal:
-    # print(f"Total Time: {total_time}, Status: Feasible (Optimal)")
-    # Remove plt.show() calls from within these functions.
-    # Then, call both functions and finally call plt.show() to display all figures.
+    # save to file
+    base_filename = f"t{total_time}_S{S}"
+    ext = ".txt"
+    suffix_num = 0
+    filename = f"{base_filename}_e{suffix_num}{ext}"
+    while os.path.exists(filename):
+        suffix_num += 1
+        filename = f"{base_filename}_e{suffix_num}{ext}"
+
+    with open(filename, 'w') as f:
+        
+        f.write(f"P_sub1_max: {max_p_sub1} W, P_sub2_max: {max_p_sub2} W\n")
+        f.write(f"Braking Efficiency: {braking_eff*100}%\n")
+        f.write("Time(s), Velocity(km/h), Power (MW)\n")  # Header
+        for t in data.keys():
+            v_out = 3.6 * model.v[t]()
+            if model.P[t]() < 0:
+                P_out = braking_eff * model.P[t]() / 1000000 # Added braking_eff because when braking, all of the power is not going back to the grid
+            else:
+                P_out = model.P[t]() / 1000000
+            f.write(f"{t}, {v_out:.3f}, {P_out:.6f}\n")
+
     plot_Pm_and_Pn_profile(model, data)
-    plot_substation_powers(model, data, rho_1, rho_2, S)
+    plot_substation_powers(model, data)
     plt.show()
 else:
     print(f"Infeasible - {termination_condition}")
-
-
