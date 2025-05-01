@@ -10,27 +10,29 @@ import time
 rho = 0.00003 # Ohms/m
 V0 = 1500 # V
 
-# Train Parameters
-m = 150000 # kg (train weight, but should be variable later)
-A = 2.88*4.30 # m^2 (Frontal area)
+# Train Parameters (SNG)
+Rotatory_inertia_factor = 0.0674
+m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
+A = 2.88*4.25 # m^2 (Frontal area)
 C = 0.002 # (Rolling resistance coefficient)
-eta = 0.893564 # Efficiency of the train's propulsion system
+eta = 0.857 # Efficiency of the train's propulsion system
 C_d = 0.8 # (Drag coefficient)
 braking_eff = 0.1 # Regenerative braking efficiency    
-max_v = 44.444 # m/s = 160 km/h (VIRM)
-max_acc = 0.768 # m/s2 (2.76 km/h/s) (VIRM)
-max_braking = 0.4 # m/s2 (2.76 km/h/s) (VIRM)
-max_p = 2157000 # W (max power)
-min_p = max_p # W (min power)
+max_v = 44.444 # m/s = 160 km/h
+max_acc = 0.81 # m/s2 (2.76 km/h/s)
+max_braking = 0.5 # m/s2 (2.76 km/h/s)
+Auxiliary_power = 65558 #  Average auxiliary power consumption (W)
+max_p = 1393000 - Auxiliary_power # W (max power)
+# min_p = max_p # W (min power)
 
 # Distance discretization
-total_distance = 38500 # (m) Length between Substation 1 and Substation 2
-total_time = 24 * 60 # (sec) From Substation 1 to Substation 2
+total_distance = 30000 # (m) Length between Substation 1 and Substation 2
+total_time = 15 * 60 # (sec) From Substation 1 to Substation 2
 delta_s = 250  # Distance step in meters
 
 # Time-dependent parameters
-max_p_sub1 = 0.5 * 1000000 # W (max power for substation 1)
-max_p_sub2 = 1.0 * 1000000 # W (max power for substation 2)
+max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
+max_p_sub2 = 2.0 * 1000000 # W (max power for substation 2)
 # WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
 WindSpeed = 2.5
 
