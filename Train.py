@@ -1,5 +1,3 @@
-# Added P of substations as variables in the model. Also added braking_eff when writing to the txt file for further plot comparison. because when braking, all of the power is not going back to the grid
-
 import pyomo.environ as pyomo
 import matplotlib.pyplot as plt
 import numpy as np
