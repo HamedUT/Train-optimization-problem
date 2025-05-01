@@ -1,7 +1,6 @@
 import pyomo.environ as pyomo
 import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size': 14})
-import numpy as np
 import sys
 import os
 import random
@@ -20,17 +19,18 @@ C_d = 0.8 # (Drag coefficient)
 braking_eff = 0.1 # Regenerative braking efficiency    
 max_v = 44.444 # m/s = 160 km/h (VIRM)
 max_acc = 0.768 # m/s2 (2.76 km/h/s) (VIRM)
+max_braking = 0.4 # m/s2 (2.76 km/h/s) (VIRM)
 max_p = 2157000 # W (max power)
 min_p = max_p # W (min power)
 
 # Distance discretization
-S = 10000 # (m) Length between Substation 1 and Substation 2
-delta_s = 100  # Distance step in meters
-total_time = 400 # (sec) From Substation 1 to Substation 2
+distance_remaining = 38500 # (m) Length between Substation 1 and Substation 2
+time_remaining = 24 * 60 # (sec) From Substation 1 to Substation 2
+delta_s = 250  # Distance step in meters
 
 # Time-dependent parameters
-max_p_sub1 = 2157000 # W (max power for substation 1)
-max_p_sub2 = 2157000 # W (max power for substation 2)
+max_p_sub1 = 3157000 # W (max power for substation 1)
+max_p_sub2 = 3157000 # W (max power for substation 2)
 # WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
 WindSpeed = 2.5
 
@@ -42,33 +42,37 @@ P_sub1_init = 0
 P_sub2_init = 0
 t_init = 0
 
-gradients = [random.uniform(-0.0025, 0.0025)]  # Initialize the first gradient randomly within the range
-for i in range(1, S // delta_s):
-    prev_gradient = gradients[-1]
-    # Generate a new gradient that does not change more than 0.005 from the previous one
-    new_gradient = prev_gradient + random.uniform(-0.0001, 0.0001)
-    # Ensure the new gradient stays within the range [-0.01, 0.01]
-    new_gradient = max(-0.0025, min(0.0025, new_gradient))
-    gradients.append(new_gradient)
-start_time = time.time()
+# Generate random gradients for the track profile
+# max_gradient = 0.0015  # Maximum gradient (0.15%)
+# gradients = [random.uniform(-max_gradient, max_gradient)]  # Initialize the first gradient randomly within the range
+# for i in range(1, distance_remaining // delta_s):
+#     prev_gradient = gradients[-1]
+#     # Generate a new gradient that does not change more than 0.005 from the previous one
+#     new_gradient = prev_gradient + random.uniform(-0.0001, 0.0001)
+#     # Ensure the new gradient stays within the range [-0.01, 0.01]
+#     new_gradient = max(-max_gradient, min(max_gradient, new_gradient))
+#     gradients.append(new_gradient)
+
+# Use a constant gradient of 0.0015 for all steps
+max_gradient = 0.0015  # Maximum gradient (0.15%)
+gradients = [max_gradient] * (distance_remaining // delta_s + 1)
+
 data = {0: {'grade': gradients[0]}}
-num_steps = int(S / delta_s) + 1  # Number of distance steps
+num_steps = int(distance_remaining / delta_s) + 1  # Number of distance steps
 for i in range(1, num_steps):
     distance = i * delta_s
     data[distance] = {'grade': gradients[min(i, len(gradients) - 1)],}
 
-def Initializer(S, delta_s, max_acc, data, m, C_d, A, C, eta, WindSpeed):
+def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed):
     D = data.keys()  # Distance steps
     model0 = pyomo.ConcreteModel()
     model0.v = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_v))  # Velocity (m/s)
     model0.P = pyomo.Var(D, domain=pyomo.Reals)  # Power consumption (kW)
-    model0.t = pyomo.Var(D, domain=pyomo.NonNegativeReals)  # Time at each distance step
     model0.of = pyomo.Objective(expr=0.0, sense=pyomo.minimize)
     model0.cons = pyomo.ConstraintList()
     
     final_distance = list(D)[-1]
-    # model0.cons.add(model0.s[final_time] == S)
-    model0.t[0].fix(0)  # Initial time is 0
+    # model0.cons.add(model0.s[final_time] == distance_remaining)
     model0.v[0].fix(0)  # Initial velocity is 0
     model0.v[final_distance].fix(0)  # Final velocity is 0
     model0.P[0].fix(0)
@@ -76,9 +80,8 @@ def Initializer(S, delta_s, max_acc, data, m, C_d, A, C, eta, WindSpeed):
 
     for d in list(D)[1:]:
         prev_d = d - delta_s
-        model0.cons.add(model0.t[d] == model0.t[prev_d] + 2 * delta_s / (model0.v[d] + model0.v[prev_d]))
         model0.cons.add((model0.v[d] - model0.v[prev_d]) / (2 * delta_s / (model0.v[d] + model0.v[prev_d])) <= max_acc)
-        model0.cons.add(-(model0.v[d] - model0.v[prev_d]) / (2 * delta_s / (model0.v[d] + model0.v[prev_d])) <= max_acc)
+        model0.cons.add(-(model0.v[d] - model0.v[prev_d]) / (2 * delta_s / (model0.v[d] + model0.v[prev_d])) <= max_braking)
 
         # Simpler version of Davies equation for power consumption
         model0.cons.add(model0.P[d] == 1 / eta * (
@@ -98,22 +101,21 @@ def Initializer(S, delta_s, max_acc, data, m, C_d, A, C, eta, WindSpeed):
         sys.exit()
     return v_opt, P_opt
 
-def train(S, delta_s, max_acc, max_p, data, m, C_d, A, C, eta, braking_eff, total_time, WindSpeed):
-    v_opt, P_opt = Initializer(S, delta_s, max_acc, data, m, C_d, A, C, eta, WindSpeed)
+def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed):
+    start_train = time.time()
+    v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed)
     D = data.keys()
     
     model = pyomo.ConcreteModel()
-    start_train = time.time()
+    
 
     # Decision Variables
     model.v = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_v), initialize=lambda model0, d: v_opt[d]) # velocity (m/s)
 
     # State Variables
     model.Pm = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_p)) 
-    model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, min_p)) 
+    model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
-    model.P_sub1 = pyomo.Var(D, domain=pyomo.Reals, bounds=(-max_p_sub1, max_p_sub1)) 
-    model.P_sub2 = pyomo.Var(D, domain=pyomo.Reals, bounds=(-max_p_sub2, max_p_sub2))
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
     
     model.of = pyomo.Objective(expr=sum(model.Pm[d] - model.Pn[d] * braking_eff for d in D), sense=pyomo.minimize)
@@ -124,22 +126,18 @@ def train(S, delta_s, max_acc, max_p, data, m, C_d, A, C, eta, braking_eff, tota
         
     # Initial conditions
     model.v[0].fix(0)
-    model.v[final_distance].fix(0)
-    model.t[final_distance].fix(total_time)
-    # model.cons.add(model.s[final_distance] == S)
-    model.Pm[0].fix(0)
     model.Pn[0].fix(0)
-    model.P_sub1[0].fix(0)
-    model.P_sub2[0].fix(0)
-
+    model.v[final_distance].fix(0)
+    model.t[final_distance].fix(time_remaining)
+    
     for d in list(D)[1:]:
         prev_d = d - delta_s
         model.cons.add(model.t[d] == model.t[prev_d] + 2 * delta_s / (model.v[d] + model.v[prev_d]))
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_acc)
-        model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_acc)
+        model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_braking)
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
-        model.cons.add(model.P_sub1[d] == model.P[d] * (S - d)/S)
-        model.cons.add(model.P_sub2[d] == model.P[d] * d / S)
+        model.cons.add(abs(model.P[d])<= distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9))  # Avoid division by zero
+        model.cons.add(abs(model.P[d])<= distance_remaining *max_p_sub2/(d + 1e-9))  # Avoid division by zero
         
         # Davies equation for power consumption
         model.cons.add(model.P[d] == 1 / eta * (
@@ -169,7 +167,7 @@ def plot_velocity_profile(model, data):
     plt.grid(True)
     plt.xlabel('Distance (km)')
     plt.ylabel('Velocity (km/h)')
-    plt.title(f'Train Velocity Profile (S={S/1000}km)')
+    plt.title(f'Train Velocity Profile (S={distance_remaining/1000}km)')
 
 def plot_Pm_and_Pn_profile_time(model, data):
     times = []
@@ -270,7 +268,7 @@ def plot_Pm_and_Pn_profile(model, data):
     lines3, labels3 = ax3.get_legend_handles_labels()
     ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper right')
 
-    plt.title(f'Train Power, Acceleration, and Velocity Profile (S={S/1000} km)')
+    plt.title(f'Train Power, Acceleration, and Velocity Profile (S={distance_remaining/1000} km)')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)   
     
 def plot_substation_powers(model, data):
@@ -288,7 +286,7 @@ def plot_substation_powers(model, data):
     plt.plot(distances, P_sub2_values, 'r-', label='Substation 2 Power')
     plt.xlabel('Distance (km)')
     plt.ylabel('Power (MW)')
-    plt.title(f'Substation Power Profile (S={S/1000} km)')
+    plt.title(f'Substation Power Profile (S={distance_remaining/1000} km)')
     plt.legend()
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
     
@@ -304,14 +302,14 @@ def plot_voltage_profile(model, data):
             voltages.append(V0)  # Initial voltage
         else:
             P = model.P[d]()
-            V = V0 - P / ((V0 / (rho * d + 1e-9)) + (V0 / (rho * (S - d + 1e-9))))
+            V = V0 - P / ((V0 / (rho * d + 1e-9)) + (V0 / (rho * (distance_remaining - d + 1e-9))))
             voltages.append(V)
 
     plt.figure(figsize=(12, 6))
     plt.plot(distances, voltages, 'b-', linewidth=2)
     plt.xlabel('Distance (km)')
     plt.ylabel('Voltage (V)')
-    plt.title(f'Train Voltage Profile (S={S/1000} km)')
+    plt.title(f'Train Voltage Profile (S={distance_remaining/1000} km)')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
 
 def plot_distance_vs_time(model, data):
@@ -331,12 +329,12 @@ def plot_distance_vs_time(model, data):
     plt.grid(True)
     plt.xlabel('Time (seconds)')
     plt.ylabel('Distance (km)')
-    plt.title(f'Train Distance vs. Time (S={S/1000} km)')
+    plt.title(f'Train Distance vs. Time (S={distance_remaining/1000} km)')
     
     # Add horizontal and vertical gridlines
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
     
-def plot_gradients_vs_distance(data, S, delta_s):
+def plot_gradients_vs_distance(data, distance_remaining, delta_s):
     # Extract distance and gradient data
     distances = []
     gradients = []
@@ -351,7 +349,7 @@ def plot_gradients_vs_distance(data, S, delta_s):
     plt.grid(True)
     plt.xlabel('Distance (km)')
     plt.ylabel('Gradient')
-    plt.title(f'Train Gradient Profile (S={S/1000} km, Step={delta_s} m)')
+    plt.title(f'Train Gradient Profile (S={distance_remaining/1000} km, Step={delta_s} m)')
     plt.ylim(-0.005, 0.005)  # Set y-axis limits to keep it constant
     
     # Add horizontal and vertical gridlines
@@ -383,43 +381,43 @@ def calculate_energy_consumption(model, data, delta_t):
         total_energy += (model.P[d]() * delta_t) / 3.6e6 
     return total_energy
 
-model, termination_condition = train(S, delta_s, max_acc, max_p, data, m, C_d, A, C, eta, braking_eff, total_time, WindSpeed)
+model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed)
 end_time = time.time()
 if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
     # Save results to file
-    base_filename = f"t{total_time}_S{S}"
-    ext = ".txt"
-    suffix_num = 0
-    filename = f"{base_filename}_e{suffix_num}{ext}"
-    while os.path.exists(filename):
-        suffix_num += 1
-        filename = f"{base_filename}_e{suffix_num}{ext}"
+    # base_filename = f"t{time_remaining}_S{distance_remaining}"
+    # ext = ".txt"
+    # suffix_num = 0
+    # filename = f"{base_filename}_e{suffix_num}{ext}"
+    # while os.path.exists(filename):
+    #     suffix_num += 1
+    #     filename = f"{base_filename}_e{suffix_num}{ext}"
 
-    with open(filename, 'w') as f:
-        f.write(f"P_sub1_max: {max_p_sub1} W, P_sub2_max: {max_p_sub2} W\n")
-        f.write(f"Braking Efficiency: {braking_eff*100}%\n")
-        f.write("Distance(m), Velocity(km/h), Power (MW), P_sub1 (MW), P_sub2 (MW)\n")  # Header
-        for d in data.keys():
-            v_out = 3.6 * model.v[d]()
-            if model.P[d]() < 0:
-                P_out = braking_eff * model.P[d]() / 1000000  # Added braking_eff for braking power
-            else:
-                P_out = model.P[d]() / 1000000
-            P_sub1_out = model.P_sub1[d]() / 1000000
-            P_sub2_out = model.P_sub2[d]() / 1000000
-            f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
+    # with open(filename, 'w') as f:
+    #     f.write(f"P_sub1_max: {max_p_sub1} W, P_sub2_max: {max_p_sub2} W\n")
+    #     f.write(f"Braking Efficiency: {braking_eff*100}%\n")
+    #     f.write("Distance(m), Velocity(km/h), Power (MW), P_sub1 (MW), P_sub2 (MW)\n")  # Header
+    #     for d in data.keys():
+    #         v_out = 3.6 * model.v[d]()
+    #         if model.P[d]() < 0:
+    #             P_out = braking_eff * model.P[d]() / 1000000  # Added braking_eff for braking power
+    #         else:
+    #             P_out = model.P[d]() / 1000000
+    #         # P_sub1_out = model.P_sub1[d]() / 1000000
+    #         # P_sub2_out = model.P_sub2[d]() / 1000000
+    #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
 
     # Plot results
     plot_Pm_and_Pn_profile(model, data)
-    plot_Pm_and_Pn_profile_time(model, data)
-    plot_substation_powers(model, data)
+    # plot_Pm_and_Pn_profile_time(model, data)
+    # plot_substation_powers(model, data)
     # plot_voltage_profile(model, data)
-    plot_distance_vs_time(model, data)  # Call the new function here
-    plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
-    Pm_per_second, total_Pm = calculate_Pm_per_d(model, data)
+    # plot_distance_vs_time(model, data)  # Call the new function here
+    # plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
+    # Pm_per_second, total_Pm = calculate_Pm_per_d(model, data)
     print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, delta_s / max_v):.3f} kWh")
-    print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
-    print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
+    # print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
+    # print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
 
     plt.show()
 else:
