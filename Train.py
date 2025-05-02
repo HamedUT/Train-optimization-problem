@@ -1,10 +1,14 @@
 import pyomo.environ as pyomo
 import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size': 14})
+import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 import sys
 import os
 import random
 import time
+import numpy as np
+
 
 # Electrical Parameters
 rho = 0.00003 # Ohms/m
@@ -12,7 +16,8 @@ V0 = 1500 # V
 
 # Train Parameters (SNG)
 Rotatory_inertia_factor = 0.0674
-m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
+Passenger_weight = 15000 # kg
+m = 152743 * (1 + Rotatory_inertia_factor) + Passenger_weight# kg (train weight, but should be variable later)
 A = 2.88*4.25 # m^2 (Frontal area)
 C = 0.002 # (Rolling resistance coefficient)
 eta = 0.857 # Efficiency of the train's propulsion system
@@ -28,7 +33,6 @@ max_p = 1393000 - Auxiliary_power # W (max power)
 # Distance discretization
 total_distance = 30000 # (m) Length between Substation 1 and Substation 2
 total_time = 15 * 60 # (sec) From Substation 1 to Substation 2
-delta_s = 250  # Distance step in meters
 
 # Time-dependent parameters
 max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
@@ -44,7 +48,7 @@ time_remaining = total_time - t_init # Remaining time (s)
 distance_remaining = total_distance - d_init # Remaining distance (m)
 
 # Generate random gradients for the track profile
-# max_gradient = 0.0015  # Maximum gradient (0.15%)
+max_gradient = 0.0015  # Maximum gradient (0.15%)
 # gradients = [random.uniform(-max_gradient, max_gradient)]  # Initialize the first gradient randomly within the range
 # for i in range(1, distance_remaining // delta_s):
 #     prev_gradient = gradients[-1]
@@ -53,16 +57,6 @@ distance_remaining = total_distance - d_init # Remaining distance (m)
 #     # Ensure the new gradient stays within the range [-0.01, 0.01]
 #     new_gradient = max(-max_gradient, min(max_gradient, new_gradient))
 #     gradients.append(new_gradient)
-
-# Use a constant gradient of 0.0015 for all steps
-max_gradient = 0.0015  # Maximum gradient (0.15%)
-gradients = [max_gradient] * (distance_remaining // delta_s + 1)
-
-data = {0: {'grade': gradients[0]}}
-num_steps = int(distance_remaining / delta_s) + 1  # Number of distance steps
-for i in range(1, num_steps):
-    distance = i * delta_s
-    data[distance] = {'grade': gradients[min(i, len(gradients) - 1)],}
 
 def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init):
     D = data.keys()  # Distance steps
@@ -382,44 +376,70 @@ def calculate_energy_consumption(model, data, delta_t):
         total_energy += (model.P[d]() * delta_t) / 3.6e6 
     return total_energy
 
-model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2)
-end_time = time.time()
-if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
-    # Save results to file
-    # base_filename = f"t{time_remaining}_S{distance_remaining}"
-    # ext = ".txt"
-    # suffix_num = 0
-    # filename = f"{base_filename}_e{suffix_num}{ext}"
-    # while os.path.exists(filename):
-    #     suffix_num += 1
-    #     filename = f"{base_filename}_e{suffix_num}{ext}"
+delta_s_list = [2500,2000,1500,1250,1000,750,500,400,300,250,200,150,125,100,75,50]
+num_runs = 20  # Number of repetitions for averaging
 
-    # with open(filename, 'w') as f:
-    #     f.write(f"P_sub1_max: {max_p_sub1} W, P_sub2_max: {max_p_sub2} W\n")
-    #     f.write(f"Braking Efficiency: {braking_eff*100}%\n")
-    #     f.write("Distance(m), Velocity(km/h), Power (MW), P_sub1 (MW), P_sub2 (MW)\n")  # Header
-    #     for d in data.keys():
-    #         v_out = 3.6 * model.v[d]()
-    #         if model.P[d]() < 0:
-    #             P_out = braking_eff * model.P[d]() / 1000000  # Added braking_eff for braking power
-    #         else:
-    #             P_out = model.P[d]() / 1000000
-    #         # P_sub1_out = model.P_sub1[d]() / 1000000
-    #         # P_sub2_out = model.P_sub2[d]() / 1000000
-    #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
+compile_times_all = {ds: [] for ds in delta_s_list}
+energy_consumptions_all = {ds: [] for ds in delta_s_list}
 
-    # Plot results
-    plot_Pm_and_Pn_profile(model, data)
-    # plot_Pm_and_Pn_profile_time(model, data)
-    # plot_substation_powers(model, data)
-    # plot_voltage_profile(model, data)
-    # plot_distance_vs_time(model, data)  # Call the new function here
-    # plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
-    # Pm_per_second, total_Pm = calculate_Pm_per_d(model, data)
-    print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, delta_s / max_v):.3f} kWh")
-    # print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
-    # print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
+for run in range(num_runs):
+    print(f"\nRun {run+1}/{num_runs}")
+    for delta_s in delta_s_list:
+        print(f"  Running for delta_s = {delta_s} ...")
+        num_steps = int(total_distance / delta_s) + 1
+        gradients = [max_gradient] * num_steps
+        data = {0: {'grade': gradients[0]}}
+        for i in range(1, num_steps):
+            distance = i * delta_s
+            data[distance] = {'grade': gradients[min(i, len(gradients) - 1)]}
 
-    plt.show()
-else:
-    print("No results to save or plot due to solver termination condition.")
+        start_time = time.time()
+        model, termination_condition = train(
+            total_distance, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta,
+            braking_eff, total_time, WindSpeed, v_init, max_p_sub1, max_p_sub2
+        )
+        end_time = time.time()
+        compile_time = end_time - start_time
+        if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
+            total_energy = calculate_energy_consumption(model, data, delta_s / max_v)
+            compile_times_all[delta_s].append(compile_time)
+            energy_consumptions_all[delta_s].append(total_energy)
+            print(f"    Success: Compile time = {compile_time:.2f} s, Total Energy = {total_energy:.3f} kWh")
+        else:
+            compile_times_all[delta_s].append(np.nan)
+            energy_consumptions_all[delta_s].append(np.nan)
+            print(f"    Failed: No optimal solution found.")
+
+# Calculate averages (ignoring failed runs)
+avg_compile_times = []
+avg_energy_consumptions = []
+for ds in delta_s_list:
+    times = [t for t in compile_times_all[ds] if not np.isnan(t)]
+    energies = [e for e in energy_consumptions_all[ds] if not np.isnan(e)]
+    avg_compile_times.append(np.mean(times) if times else np.nan)
+    avg_energy_consumptions.append(np.mean(energies) if energies else np.nan)
+
+# Print summary
+print("\nAveraged Summary for different delta_s:")
+for ds, t, e in zip(delta_s_list, avg_compile_times, avg_energy_consumptions):
+    print(f"delta_s={ds:4}: Avg Compile time = {t if not np.isnan(t) else 'N/A':>8.2f}, Avg Total Energy = {e if not np.isnan(e) else 'N/A'}")
+
+# Interactive plot with averages
+fig = make_subplots(rows=1, cols=2, subplot_titles=("Avg Compile Time vs delta_s", "Avg Total Energy vs delta_s"))
+
+fig.add_trace(
+    go.Scatter(x=delta_s_list, y=avg_compile_times, mode='markers+lines', name='Avg Compile Time (s)', marker=dict(size=10)),
+    row=1, col=1
+)
+fig.update_xaxes(title_text="delta_s (m)", row=1, col=1)
+fig.update_yaxes(title_text="Avg Compile Time (s)", row=1, col=1)
+
+fig.add_trace(
+    go.Scatter(x=delta_s_list, y=avg_energy_consumptions, mode='markers+lines', name='Avg Total Energy (kWh)', marker=dict(size=10)),
+    row=1, col=2
+)
+fig.update_xaxes(title_text="delta_s (m)", row=1, col=2)
+fig.update_yaxes(title_text="Avg Total Energy (kWh)", row=1, col=2)
+
+fig.update_layout(title="Averaged Interactive Comparison of delta_s", hovermode="closest")
+fig.show()
