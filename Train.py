@@ -7,23 +7,16 @@ import time
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 
 # Electrical Parameters
-rho = 0.00003 # Ohms/m
-V0 = 1500 # V
+rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
 
 # Train Parameters (SNG)
 Rotatory_inertia_factor = 0.0674
 m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
-A = 2.88*4.25 # m^2 (Frontal area)
-C = 0.002 # (Rolling resistance coefficient)
-eta = 0.857 # Efficiency of the train's propulsion system
-C_d = 0.8 # (Drag coefficient)
-braking_eff = 0.1 # Regenerative braking efficiency    
-max_v = 44.444 # m/s = 160 km/h
-max_acc = 0.81 # m/s2 (2.76 km/h/s)
-max_braking = 0.5 # m/s2 (2.76 km/h/s)
+A, C, C_d = 2.88*4.25, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
+eta, braking_eff = 0.857, 0.1 # Efficiency of the train's propulsion system, Regenerative braking efficiency
+max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 Auxiliary_power = 65558 #  Average auxiliary power consumption (W)
 max_p = 1393000 - Auxiliary_power # W (max power)
-# min_p = max_p # W (min power)
 
 # Distance discretization
 total_distance = 30000 # (m) Length between Substation 1 and Substation 2
@@ -40,29 +33,28 @@ WindSpeed = 2.5
 v_init = 0 / 3.6 # (Enter in km/h) Initial velocity (m/s)
 t_init = 0 * 60 # Initial time (s)
 d_init = 0 * 1000 # Initial distance (m)
-time_remaining = total_time - t_init # Remaining time (s)
-distance_remaining = total_distance - d_init # Remaining distance (m)
+time_remaining, distance_remaining = total_time - t_init, total_distance - d_init # Remaining time (s), Remaining distance (m)
 
-# Generate random gradients for the track profile
-# max_gradient = 0.0015  # Maximum gradient (0.15%)
-# gradients = [random.uniform(-max_gradient, max_gradient)]  # Initialize the first gradient randomly within the range
-# for i in range(1, distance_remaining // delta_s):
-#     prev_gradient = gradients[-1]
-#     # Generate a new gradient that does not change more than 0.005 from the previous one
-#     new_gradient = prev_gradient + random.uniform(-0.0001, 0.0001)
-#     # Ensure the new gradient stays within the range [-0.01, 0.01]
-#     new_gradient = max(-max_gradient, min(max_gradient, new_gradient))
-#     gradients.append(new_gradient)
+def generate_gradients(distance_remaining, delta_s, mode, max_gradient):
+    # Generate gradients for the track profile. mode: "const" for constant gradient, "randm" for random profile.
+    num_steps = distance_remaining // delta_s + 1
+    if mode == "const":
+        gradients = [max_gradient] * num_steps
+    elif mode == "randm":
+        gradients = [random.uniform(-max_gradient, max_gradient)]
+        for i in range(1, num_steps):
+            prev_gradient = gradients[-1]
+            new_gradient = prev_gradient + random.uniform(-0.0001, 0.0001)
+            new_gradient = max(-max_gradient, min(max_gradient, new_gradient))
+            gradients.append(new_gradient)
+    else:
+        raise ValueError("mode must be 'const' or 'randm'")
+    return gradients
 
-# Use a constant gradient of 0.0015 for all steps
-max_gradient = 0.0015  # Maximum gradient (0.15%)
-gradients = [max_gradient] * (distance_remaining // delta_s + 1)
-
+gradients = generate_gradients(distance_remaining, delta_s, mode="const", max_gradient=0.0015)
 data = {0: {'grade': gradients[0]}}
-num_steps = int(distance_remaining / delta_s) + 1  # Number of distance steps
-for i in range(1, num_steps):
-    distance = i * delta_s
-    data[distance] = {'grade': gradients[min(i, len(gradients) - 1)],}
+for i in range(1, int(distance_remaining / delta_s) + 1): # Number of distance steps
+    data[i * delta_s] = {'grade': gradients[min(i, len(gradients) - 1)],}
 
 def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init):
     D = data.keys()  # Distance steps
@@ -106,9 +98,7 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     start_train = time.time()
     v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init)
     D = data.keys()
-    
     model = pyomo.ConcreteModel()
-    
 
     # Decision Variables
     model.v = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_v), initialize=lambda model0, d: v_opt[d]) # velocity (m/s)
@@ -119,12 +109,13 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
     
+    # Objective Function
     model.of = pyomo.Objective(expr=sum(model.Pm[d] - model.Pn[d] * braking_eff for d in D), sense=pyomo.minimize)
     
     # Constraints
     model.cons = pyomo.ConstraintList()
     final_distance = list(D)[-1]
-        
+    
     # Initial conditions
     model.v[0].fix(v_init)
     model.Pn[0].fix(0)
@@ -135,40 +126,23 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
         prev_d = d - delta_s
         model.cons.add(model.t[d] == model.t[prev_d] + 2 * delta_s / (model.v[d] + model.v[prev_d]))
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_acc)
-        model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_braking)
+        model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_braking)        
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
         model.cons.add(abs(model.P[d])<= distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9))  # Avoid division by zero
         model.cons.add(abs(model.P[d])<= distance_remaining *max_p_sub2/(d + 1e-9))  # Avoid division by zero
         
         # Davies equation for power consumption
-        model.cons.add(model.P[d] == 1 / eta * (
+        model.cons.add(model.P[d] == model.v[d] / eta * (
             0.5 * 1.225 * C_d * A * (model.v[d] + WindSpeed)**2 +
             C * m * 9.807 +
             m * 9.807 * data[d]['grade'] +  # Gradient at this distance
-            m * (model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d]))
-        ) * model.v[d]) 
-            
+            m * (model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])))) 
+        
     solver = pyomo.SolverFactory('ipopt')
     results = solver.solve(model, tee=False)
     end_train = time.time()
     print(f"Training time: {end_train - start_train:.2f} seconds")
-
     return model, results.solver.termination_condition  # Add return statement  # Add return statement
-
-def plot_velocity_profile(model, data):
-    times = []
-    velocities = []
-    
-    for d in data.keys():
-        distances.append(d / 1000)  # Convert to km
-        velocities.append(model.v[d]() * 3.6)  # Convert m/s to km/h
-    
-    plt.figure(figsize=(12, 6))
-    plt.plot(distances, velocities, 'b-', linewidth=2)
-    plt.grid(True)
-    plt.xlabel('Distance (km)')
-    plt.ylabel('Velocity (km/h)')
-    plt.title(f'Train Velocity Profile (S={distance_remaining/1000}km)')
 
 def plot_Pm_and_Pn_profile_time(model, data):
     times = []
