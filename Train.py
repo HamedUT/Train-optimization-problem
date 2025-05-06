@@ -1,10 +1,10 @@
 import pyomo.environ as pyomo
 import matplotlib.pyplot as plt
-plt.rcParams.update({'font.size': 14})
 import sys
 import os
 import random
 import time
+from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 
 # Electrical Parameters
 rho = 0.00003 # Ohms/m
@@ -247,21 +247,33 @@ def plot_Pm_and_Pn_profile(model, data):
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
     # Plot power on primary y-axis
-    ax1.plot(distances, Pm_values, 'b-', linewidth=2, label='Positive Power (Pm)')
-    ax1.plot(distances, Pn_values, 'r-', linewidth=2, label='Negative Power (Pn)')
-    ax1.set_xlabel('Distance (km)')
-    ax1.set_ylabel('Power (MW)', color='b')
+    ax1.plot(distances, [pm - pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
+    ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
+    ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
+    ax1.set_xlim(left=0)
+    ax1.set_xlabel('Distance (km)', fontsize=16, fontweight='bold')
+    ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
+
+    # Add more grid lines for y-axis only
+    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.7)
+    ax1.xaxis.grid(False)
+
+    # Add more ticks for y axis
+    y_major_locator = MultipleLocator(0.2)  # Major ticks every 0.2 MW
+    y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
+    ax1.yaxis.set_major_locator(y_major_locator)
+    ax1.yaxis.set_minor_locator(y_minor_locator)
 
     # Create secondary y-axis for acceleration
     ax2 = ax1.twinx()
     ax2.plot(distances, accelerations, 'g-', linewidth=2, label='Acceleration')
-    ax2.set_ylabel('Acceleration (m/s²)', color='g')
+    ax2.set_ylabel('Acceleration (m/s²)', color='g', fontsize=16, fontweight='bold')
 
     # Create third y-axis for velocity
     ax3 = ax1.twinx()
     ax3.spines["right"].set_position(("axes", 1.1))
     ax3.plot(distances, velocities, 'orange', linewidth=2, label='Velocity')
-    ax3.set_ylabel('Velocity (km/h)', color='orange')
+    ax3.set_ylabel('Velocity (km/h)', color='orange', fontsize=16, fontweight='bold')
 
     # Add legends
     lines1, labels1 = ax1.get_legend_handles_labels()
@@ -269,8 +281,9 @@ def plot_Pm_and_Pn_profile(model, data):
     lines3, labels3 = ax3.get_legend_handles_labels()
     ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper right')
 
-    plt.title(f'Train Power, Acceleration, and Velocity Profile (S={distance_remaining/1000} km)')
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)   
+    minutes = int(time_remaining // 60)
+    seconds = int(time_remaining % 60)
+    plt.title(f'Train Power, Acceleration, and Velocity Profile (S={distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18,fontweight='bold')
     
 def plot_substation_powers(model, data):
     distances = []
@@ -279,17 +292,35 @@ def plot_substation_powers(model, data):
 
     for d in data.keys():
         distances.append(d / 1000)  # Convert distance to km
-        P_sub1_values.append(model.P_sub1[d]() / 1000000)  # Convert W to MW
-        P_sub2_values.append(model.P_sub2[d]() / 1000000)  # Convert W to MW
+        P = model.P[d]()
+        P_sub1 = (distance_remaining - d) * P / distance_remaining
+        P_sub2 = d * P / distance_remaining
+        P_sub1_values.append(P_sub1 / 1000000)  # Convert W to MW
+        P_sub2_values.append(P_sub2 / 1000000)  # Convert W to MW
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(distances, P_sub1_values, 'b-', label='Substation 1 Power')
-    plt.plot(distances, P_sub2_values, 'r-', label='Substation 2 Power')
-    plt.xlabel('Distance (km)')
-    plt.ylabel('Power (MW)')
-    plt.title(f'Substation Power Profile (S={distance_remaining/1000} km)')
-    plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax1.plot(distances, P_sub1_values, 'b-', linewidth=2, label='Substation 1 Power')
+    ax1.plot(distances, P_sub2_values, 'r-', linewidth=2, label='Substation 2 Power')
+    ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
+    ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
+    ax1.set_xlim(left=0)
+    ax1.set_xlabel('Distance (km)', fontsize=16, fontweight='bold')
+    ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
+
+    # Add more grid lines for y-axis only
+    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.7)
+    ax1.xaxis.grid(False)
+
+    # Add more ticks for y axis
+    y_major_locator = MultipleLocator(0.2)  # Major ticks every 0.2 MW
+    y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
+    ax1.yaxis.set_major_locator(y_major_locator)
+    ax1.yaxis.set_minor_locator(y_minor_locator)
+
+    minutes, seconds = int(time_remaining // 60), int(time_remaining % 60)
+    plt.title(f'Substation Power Profile (S={distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
+    ax1.legend(loc='upper right', fontsize=14)
+    plt.show()
     
 def plot_voltage_profile(model, data):
     distances = []
@@ -409,9 +440,20 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
 
     # Plot results
+    plt.rcParams.update({
+    'font.size': 15,
+    'axes.titlesize': 18,
+    'axes.labelsize': 16,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'legend.fontsize': 14,
+    'figure.titlesize': 20,
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']
+    })
     plot_Pm_and_Pn_profile(model, data)
     # plot_Pm_and_Pn_profile_time(model, data)
-    # plot_substation_powers(model, data)
+    plot_substation_powers(model, data)
     # plot_voltage_profile(model, data)
     # plot_distance_vs_time(model, data)  # Call the new function here
     # plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
