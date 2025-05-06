@@ -4,6 +4,7 @@ import sys
 import os
 import random
 import time
+import numpy as np  
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 
 # Electrical Parameters
@@ -17,16 +18,15 @@ eta, braking_eff = 0.857, 0.1 # Efficiency of the train's propulsion system, Reg
 max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 Auxiliary_power = 65558 #  Average auxiliary power consumption (W)
 max_p = 1393000 - Auxiliary_power # W (max power)
-mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
 # Distance discretization
-total_distance = 30000 # (m) Length between Substation 1 and Substation 2
-total_time = 15 * 60 # (sec) From Substation 1 to Substation 2
+total_distance = 5000 # (km) Length between Substation 1 and Substation 2
+total_time = 3.5 * 60 # (sec) From Substation 1 to Substation 2
 delta_s = 250  # Distance step in meters
 
 # Time-dependent parameters
-max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
-max_p_sub2 = 2.0 * 1000000 # W (max power for substation 2)
+max_p_sub1 = 2.0 * 1e6 # W (max power for substation 1)
+max_p_sub2 = 2.0 * 1e6 # W (max power for substation 2)
 # WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
 WindSpeed = 2.5
 
@@ -36,6 +36,7 @@ t_init = 0 * 60 # Initial time (s)
 d_init = 0 * 1000 # Initial distance (m)
 time_remaining, distance_remaining = total_time - t_init, total_distance - d_init # Remaining time (s), Remaining distance (m)
 
+# Topographic Parameters
 def generate_gradients(distance_remaining, delta_s, mode, max_gradient):
     # Generate gradients for the track profile. mode: "const" for constant gradient, "randm" for random profile.
     num_steps = distance_remaining // delta_s + 1
@@ -51,7 +52,7 @@ def generate_gradients(distance_remaining, delta_s, mode, max_gradient):
     else:
         raise ValueError("mode must be 'const' or 'randm'")
     return gradients
-
+mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 def generate_track_radius(distance_remaining, delta_s, mode, min_radius, max_radius):
     # Generate track radius profile. mode: "const" for constant radius, "randm" for random profile.
     num_steps = distance_remaining // delta_s + 1
@@ -68,9 +69,7 @@ def generate_track_radius(distance_remaining, delta_s, mode, min_radius, max_rad
     else:
         raise ValueError("mode must be 'const' or 'randm'")
     return track_radius
-
 gradients = generate_gradients(distance_remaining, delta_s, mode = "const", max_gradient=0.0015)
-
 track_radius = generate_track_radius(distance_remaining, delta_s, "const", min_radius=1000, max_radius=1e6)
 
 data = {0: {'grade': gradients[0], 'radius': track_radius[0]}}
@@ -127,7 +126,7 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
 
     # State Variables
     model.Pm = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, max_p)) 
-    model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
+    model.Pn = pyomo.Var(D, domain=pyomo.Reals) 
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
     
@@ -318,7 +317,6 @@ def plot_substation_powers(model, data):
     minutes, seconds = int(time_remaining // 60), int(time_remaining % 60)
     plt.title(f'Substation Power Profile (S={distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
     ax1.legend(loc='upper right', fontsize=14)
-    plt.show()
     
 def plot_voltage_profile(model, data):
     distances = []
@@ -454,31 +452,88 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
 
     # Plot results
-    plt.rcParams.update({
-    'font.size': 15,
-    'axes.titlesize': 18,
-    'axes.labelsize': 16,
-    'xtick.labelsize': 14,
-    'ytick.labelsize': 14,
-    'legend.fontsize': 14,
-    'figure.titlesize': 20,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']
-    })
+    plt.rcParams.update({'font.size': 15, 'axes.titlesize': 18, 'axes.labelsize': 16, 'xtick.labelsize': 14, 'ytick.labelsize': 14, 'legend.fontsize': 14, 'figure.titlesize': 20, 'font.family': 'serif', 'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']})
     
-    # plot_Pm_and_Pn_profile_time(model, data)
-    # plot_voltage_profile(model, data)
-    # plot_distance_vs_time(model, data)  # Call the new function here
-    # plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
-    # Pm_per_second, total_Pm = calculate_Pm_per_d(model, data)
     print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, delta_s):.3f} kWh")
+    
+    # Add max_cruise comparison
+    from max_cruise import compute_cruise_profile
+    
+    # Prepare parameters for max_cruise
+    cruise_params = {
+        'total_distance': distance_remaining,
+        'total_time': time_remaining,
+        'delta_s': delta_s,
+        'v_init': v_init,
+        'max_v': max_v,
+        'max_acc': max_acc,
+        'max_braking': max_braking,
+        'max_p': max_p,
+        'max_p_sub1': max_p_sub1,
+        'max_p_sub2': max_p_sub2,
+        'm': m,
+        'C_d': C_d,
+        'A': A,
+        'C': C,
+        'eta': eta,
+        'WindSpeed': WindSpeed,
+        'gradients': gradients,
+        'track_radius': track_radius,
+        'mu_curve': mu_curve,
+        'V0': V0,
+        'rho': rho,
+        'Auxiliary_power': Auxiliary_power
+    }
+    
+    cruise_result = compute_cruise_profile(cruise_params)
+    from max_coast import compute_coast_profile
+    coast_result = compute_coast_profile(cruise_params)
+
+    # Plot comparison
+    plt.figure(figsize=(12, 10))
+    plt.subplot(2, 1, 1)
+    # Optimized profile
+    distances = np.array(list(data.keys()))
+    velocities = np.array([model.v[d]() * 3.6 for d in data.keys()])  # Convert to km/h
+    plt.plot(distances/1000, velocities, 'b-', label='Optimized Profile', linewidth=2)
+    # Bang-bang profile
+    plt.plot(cruise_result['distances']/1000, cruise_result['velocities'] * 3.6, 
+             'r--', label='Bang-Bang Profile', linewidth=2)
+    # Coast profile
+    plt.plot(coast_result['distances']/1000, coast_result['velocities'] * 3.6, 
+             'g-.', label='Coast Profile', linewidth=2)
+
+    plt.xlabel('Distance (km)', fontsize=12)
+    plt.ylabel('Velocity (km/h)', fontsize=12)
+    plt.title(
+        f'Velocity Profile Comparison\n'
+        f'Optimized: {calculate_energy_consumption(model, data, delta_s):.1f} kWh, '
+        f'Bang-bang: {cruise_result["total_energy"]:.1f} kWh, '
+        f'Coast: {coast_result["total_energy"]:.1f} kWh',
+        fontsize=14
+    )
+    plt.grid(True)
+    plt.legend()
+
+    # Second subplot: Power comparison
+    plt.subplot(2, 1, 2)
+    optimized_power = np.array([model.P[d]() / 1e6 for d in data.keys()])  # Convert W to MW
+    plt.plot(distances/1000, optimized_power, 'b-', label='Optimized Power', linewidth=2)
+    plt.plot(cruise_result['distances']/1000, cruise_result['power'] / 1e6,
+             'r--', label='Bang-Bang Power', linewidth=2)
+    plt.plot(coast_result['distances']/1000, coast_result['power'] / 1e6,
+             'g-.', label='Coast Power', linewidth=2)
+
+    plt.xlabel('Distance (km)', fontsize=12)
+    plt.ylabel('Power (MW)', fontsize=12)
+    plt.title('Power Profile Comparison', fontsize=14)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+
+    print(f"Bang-bang profile energy consumption: {cruise_result['total_energy']:.3f} kWh")
+    print(f"Coast profile energy consumption: {coast_result['total_energy']:.3f} kWh")
     print(f"\nTotal curve resistance sum over journey: {calculate_total_curve_energy(model, data, mu_curve, m, delta_s):.3f} kWh")
-    # print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
-    # print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
-    plot_substation_powers(model, data)
-    plot_Pm_and_Pn_profile(model, data)
     plt.show()
 else:
     print("No results to save or plot due to solver termination condition.")
-
-
