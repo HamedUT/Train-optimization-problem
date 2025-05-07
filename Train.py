@@ -7,39 +7,9 @@ import time
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 import csv  # <-- add this import
 
-# Electrical Parameters
-rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
-
-# Train Parameters (SNG)
-Rotatory_inertia_factor = 0.0674
-m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
-A, C, C_d = 2.88*4.25, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
-eta, braking_eff = 0.857, 0.1 # Efficiency of the train's propulsion system, Regenerative braking efficiency
-max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
-Auxiliary_power = 65558 #  Average auxiliary power consumption (W)
-max_p = 1393000 - Auxiliary_power # W (max power)
-mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
-
-# Distance discretization
-total_distance = 9848 # (m) Length between Substation 1 and Substation 2
-total_time = 7 * 60 # (sec) From Substation 1 to Substation 2
-delta_s = 200  # Distance step in meters
-
-# Time-dependent parameters
-max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
-max_p_sub2 = 2.0 * 1000000 # W (max power for substation 2)
-# WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
-WindSpeed = 2.5
-
-# Initialize initial conditions
-v_init = 0 / 3.6 # (Enter in km/h) Initial velocity (m/s)
-t_init = 0 * 60 # Initial time (s)
-d_init = 0 * 1000 # Initial distance (m)
-time_remaining, distance_remaining = total_time - t_init, total_distance - d_init # Remaining time (s), Remaining distance (m)
-
-def generate_gradients(distance_remaining, delta_s, mode, max_gradient):
+def generate_random_gradients(distance_remaining, delta_s, mode, max_gradient):
     # Generate gradients for the track profile. mode: "const" for constant gradient, "randm" for random profile.
-    num_steps = distance_remaining // delta_s + 1
+    num_steps = int(distance_remaining // delta_s + 1)
     if mode == "const":
         gradients = [max_gradient] * num_steps
     elif mode == "randm":
@@ -53,9 +23,9 @@ def generate_gradients(distance_remaining, delta_s, mode, max_gradient):
         raise ValueError("mode must be 'const' or 'randm'")
     return gradients
 
-def generate_track_radius(distance_remaining, delta_s, mode, min_radius, max_radius):
+def generate_random_track_radius(distance_remaining, delta_s, mode, min_radius, max_radius):
     # Generate track radius profile. mode: "const" for constant radius, "randm" for random profile.
-    num_steps = distance_remaining // delta_s + 1
+    num_steps = int(distance_remaining // delta_s + 1)
     if mode == "const":
         track_radius = [max_radius] * num_steps
     elif mode == "randm":
@@ -435,9 +405,10 @@ def calculate_total_curve_energy(model, data, mu_curve, m, delta_s):
         total_curve_energy += mu_curve * m * (v_avg ** 3) / radius / 3.6e6  # in kWh
     return total_curve_energy
 
-def process_speed_limits(filepath, delta_s, distance_remaining):
+def process_speed_limits(filepath, delta_s, d_init):
     """
-    Reads a CSV file and processes speed limits for every delta_s step.
+    Reads a CSV file generated from Rijstrategie MSRP and processes speed limits for every delta_s step.
+    The first and second zero-speed rows are used to determine the speed limits.
     Returns:
         - speed_limits_dict: Dictionary for plotting speed limits
         - speed_limit_array: Array of speed limits for each delta_s step
@@ -464,9 +435,13 @@ def process_speed_limits(filepath, delta_s, distance_remaining):
 
     start_idx = zero_indices[0]
     end_idx = zero_indices[1]
+    while d_init>=distances[start_idx]:
+        start_idx += 1
+        if start_idx >= len(distances):
+            raise ValueError("Initial distance exceeds the range of the speed limits in the CSV file.")
     start_distance = distances[start_idx]
     end_distance = distances[end_idx]
-    total_distance = end_distance - start_distance
+    distance_remaining = end_distance - start_distance
 
     # Build speed limits dictionary for plotting
     speed_limits_dict = {}
@@ -492,18 +467,44 @@ def process_speed_limits(filepath, delta_s, distance_remaining):
             # If no interval found, use the last known speed limit
             speed_limit_array.append(sorted_limits[-1][1]['speed'] / 3.6)
 
-    return speed_limits_dict, speed_limit_array
+    return speed_limits_dict, speed_limit_array, distance_remaining
 
 
-gradients = generate_gradients(distance_remaining, delta_s, mode = "const", max_gradient=0.0015)
+# Electrical Parameters
+rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
 
-track_radius = generate_track_radius(distance_remaining, delta_s, "const", min_radius=1000, max_radius=1e6)
+# Train Parameters (SNG)
+Rotatory_inertia_factor = 0.0674
+m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
+A, C, C_d = 2.88*4.25, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
+eta, braking_eff = 0.857, 0.1 # Efficiency of the train's propulsion system, Regenerative braking efficiency
+max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
+Auxiliary_power = 65558 #  Average auxiliary power consumption (W)
+max_p = 1393000 - Auxiliary_power # W (max power)
+mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
-csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\TimTim\Application Files\RijstrategieV6_1_0_0_0\Data\mrsp#2839#20250507.csv"
-speed_limits_dict, speed_limit_array = process_speed_limits(csv_path, delta_s, distance_remaining)
-print([v * 3.6 for v in speed_limit_array])
-print(speed_limits_dict)
-# Update the data dictionary to include speed limits
+# Distance discretization
+total_time = 7 * 60 # (sec) From Substation 1 to Substation 2
+delta_s = 200  # Distance step in meters
+
+# Time-dependent parameters
+max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
+max_p_sub2 = 2.0 * 1000000 # W (max power for substation 2)
+# WindSpeed = random.choice([random.uniform(-5, -2), random.uniform(2, 5)])  # m/s (Wind speed, excluding -2 to 2)
+WindSpeed = 2.5
+
+# Initialize initial conditions
+v_init = 0 / 3.6 # (Enter in km/h) Initial velocity (m/s)
+t_init = 0 * 60 # Initial time (s)
+d_init = 0 * 1000 # Initial distance (m)
+time_remaining = total_time - t_init # Remaining time (s), Remaining distance (m)
+
+speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\mrsp#2839#20250507.csv"
+speed_limits_dict, speed_limit_array, distance_remaining = process_speed_limits(speed_limit_csv_path, delta_s, d_init)
+print(f"Distance remaining: {distance_remaining} m")
+gradients = generate_random_gradients(distance_remaining, delta_s, mode = "const", max_gradient=0.0015)
+track_radius = generate_random_track_radius(distance_remaining, delta_s, "const", min_radius=1000, max_radius=1e6)
+
 data = {0: {'grade': gradients[0], 'radius': track_radius[0], 'speed_limit': speed_limit_array[0]}}
 for i in range(1, int(distance_remaining / delta_s) + 1):
     data[i * delta_s] = {
@@ -511,12 +512,7 @@ for i in range(1, int(distance_remaining / delta_s) + 1):
         'radius': track_radius[min(i, len(track_radius) - 1)],
         'speed_limit': speed_limit_array[min(i, len(speed_limit_array) - 1)]
     }
-
-# Print the speed limit for each distance step
-# print("Speed limits from data:")
-# for d in data:
-#     print(f"Distance {d} m: Speed limit = {data[d]['speed_limit'] * 3.6:.2f} km/h")
-    
+  
 model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve)
 end_time = time.time()
 
@@ -545,27 +541,10 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
 
     # Plot results
-    plt.rcParams.update({'font.size': 15,
-    'axes.titlesize': 18,
-    'axes.labelsize': 16,
-    'xtick.labelsize': 14,
-    'ytick.labelsize': 14,
-    'legend.fontsize': 14,
-    'figure.titlesize': 20,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']
-    })
-    
-    # plot_Pm_and_Pn_profile_time(model, data)
-    # plot_voltage_profile(model, data)
-    # plot_distance_vs_time(model, data)  # Call the new function here
-    # plot_gradients_vs_distance(data, S, delta_s)  # Call the new function here
-    # Pm_per_second, total_Pm = calculate_Pm_per_d(model, data)
+    plt.rcParams.update({'font.size': 15, 'axes.titlesize': 18, 'axes.labelsize': 16, 'xtick.labelsize': 14, 'ytick.labelsize': 14, 'legend.fontsize': 14, 'figure.titlesize': 20, 'font.family': 'serif', 'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']})
     print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, delta_s):.3f} kWh")
     print(f"\nTotal curve resistance sum over journey: {calculate_total_curve_energy(model, data, mu_curve, m, delta_s):.3f} kWh")
-    # print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
-    # print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
-    plot_substation_powers(model, data)
+    # plot_substation_powers(model, data)
     plot_Pm_and_Pn_profile(model, data, speed_limits=speed_limits_dict)
     plt.show()
 else:
