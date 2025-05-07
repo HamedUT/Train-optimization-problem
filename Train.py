@@ -5,6 +5,7 @@ import os
 import random
 import time
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+import csv  # <-- add this import
 
 # Electrical Parameters
 rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
@@ -20,9 +21,9 @@ max_p = 1393000 - Auxiliary_power # W (max power)
 mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
 # Distance discretization
-total_distance = 30000 # (m) Length between Substation 1 and Substation 2
-total_time = 15 * 60 # (sec) From Substation 1 to Substation 2
-delta_s = 250  # Distance step in meters
+total_distance = 9848 # (m) Length between Substation 1 and Substation 2
+total_time = 7 * 60 # (sec) From Substation 1 to Substation 2
+delta_s = 200  # Distance step in meters
 
 # Time-dependent parameters
 max_p_sub1 = 2.0 * 1000000 # W (max power for substation 1)
@@ -68,15 +69,6 @@ def generate_track_radius(distance_remaining, delta_s, mode, min_radius, max_rad
     else:
         raise ValueError("mode must be 'const' or 'randm'")
     return track_radius
-
-gradients = generate_gradients(distance_remaining, delta_s, mode = "const", max_gradient=0.0015)
-
-track_radius = generate_track_radius(distance_remaining, delta_s, "const", min_radius=1000, max_radius=1e6)
-
-data = {0: {'grade': gradients[0], 'radius': track_radius[0]}}
-for i in range(1, int(distance_remaining / delta_s) + 1):  # Number of distance steps
-    data[i * delta_s] = {'grade': gradients[min(i, len(gradients) - 1)],
-        'radius': track_radius[min(i, len(track_radius) - 1)]}
 
 def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init):
     D = data.keys()  # Distance steps
@@ -147,6 +139,7 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     for d in list(D)[1:]:
         prev_d = d - delta_s
         model.cons.add(model.t[d] == model.t[prev_d] + 2 * delta_s / (model.v[d] + model.v[prev_d]))
+        model.cons.add(model.v[d] <= data[d]['speed_limit'])  # Speed limit constraint
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_braking)        
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
@@ -219,7 +212,7 @@ def plot_Pm_and_Pn_profile_time(model, data):
     plt.title(f'Train Power, Acceleration, and Velocity Profile (Time-Based)')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)   
 
-def plot_Pm_and_Pn_profile(model, data):
+def plot_Pm_and_Pn_profile(model, data, speed_limits=None):
     distances = []
     Pm_values = []
     Pn_values = []
@@ -273,6 +266,23 @@ def plot_Pm_and_Pn_profile(model, data):
     ax3.plot(distances, velocities, 'orange', linewidth=2, label='Velocity')
     ax3.set_ylabel('Velocity (km/h)', color='orange', fontsize=16, fontweight='bold')
 
+    # Overlay speed limit profile from CSV if provided
+    if speed_limits is not None:
+        # Prepare step plot data for speed limits
+        interval_starts = list(speed_limits.keys())
+        interval_ends = [speed_limits[d]['end'] for d in interval_starts]
+        interval_speeds = [speed_limits[d]['speed'] for d in interval_starts]
+        plot_distances = []
+        plot_speeds = []
+        for i in range(len(interval_starts)):
+            if i == 0:
+                plot_distances.append(interval_starts[i] / 1000)
+                plot_speeds.append(interval_speeds[i])
+            plot_distances.append(interval_ends[i] / 1000)
+            plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
+        # Plot on the velocity axis (ax3)
+        ax3.step(plot_distances, plot_speeds, where='post', color='red', linewidth=2, linestyle='--', label='Speed Limit (CSV)')
+
     # Add legends
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -318,7 +328,6 @@ def plot_substation_powers(model, data):
     minutes, seconds = int(time_remaining // 60), int(time_remaining % 60)
     plt.title(f'Substation Power Profile (S={distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
     ax1.legend(loc='upper right', fontsize=14)
-    plt.show()
     
 def plot_voltage_profile(model, data):
     distances = []
@@ -426,6 +435,88 @@ def calculate_total_curve_energy(model, data, mu_curve, m, delta_s):
         total_curve_energy += mu_curve * m * (v_avg ** 3) / radius / 3.6e6  # in kWh
     return total_curve_energy
 
+def process_speed_limits(filepath, delta_s, distance_remaining):
+    """
+    Reads a CSV file and processes speed limits for every delta_s step.
+    Returns:
+        - speed_limits_dict: Dictionary for plotting speed limits
+        - speed_limit_array: Array of speed limits for each delta_s step
+    """
+    # Read the CSV file
+    distances = []
+    speeds = []
+    with open(filepath, newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile, delimiter=';')
+        header = next(reader)  # Skip header
+        for row in reader:
+            try:
+                distance = float(row[1])
+                speed = float(row[2])
+                distances.append(distance)
+                speeds.append(speed)
+            except (IndexError, ValueError):
+                continue
+
+    # Find the first and second zero speed rows
+    zero_indices = [i for i, s in enumerate(speeds) if s == 0]
+    if len(zero_indices) < 2:
+        raise ValueError("CSV does not contain at least two zero-speed rows.")
+
+    start_idx = zero_indices[0]
+    end_idx = zero_indices[1]
+    start_distance = distances[start_idx]
+    end_distance = distances[end_idx]
+    total_distance = end_distance - start_distance
+
+    # Build speed limits dictionary for plotting
+    speed_limits_dict = {}
+    for i in range(start_idx, end_idx):
+        d_start = distances[i] - start_distance  # Shift distances to start from 0
+        d_end = distances[i+1] - start_distance if i+1 <= end_idx else end_distance - start_distance
+        speed = speeds[1] if i == 0 else speeds[i]
+        speed_limits_dict[d_start] = {'end': d_end, 'speed': speed}
+
+    # Generate speed limit array for every delta_s step
+    num_steps = int(distance_remaining // delta_s + 1)
+    speed_limit_array = []
+    sorted_limits = sorted(speed_limits_dict.items())
+
+    for i in range(num_steps):
+        current_distance = i * delta_s
+        # Find applicable speed limit
+        for (start_d, limit_data) in sorted_limits:
+            if start_d <= current_distance < limit_data['end']:
+                speed_limit_array.append(limit_data['speed'] / 3.6)  # Convert km/h to m/s
+                break
+        else:
+            # If no interval found, use the last known speed limit
+            speed_limit_array.append(sorted_limits[-1][1]['speed'] / 3.6)
+
+    return speed_limits_dict, speed_limit_array
+
+
+gradients = generate_gradients(distance_remaining, delta_s, mode = "const", max_gradient=0.0015)
+
+track_radius = generate_track_radius(distance_remaining, delta_s, "const", min_radius=1000, max_radius=1e6)
+
+csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\TimTim\Application Files\RijstrategieV6_1_0_0_0\Data\mrsp#2839#20250507.csv"
+speed_limits_dict, speed_limit_array = process_speed_limits(csv_path, delta_s, distance_remaining)
+print([v * 3.6 for v in speed_limit_array])
+print(speed_limits_dict)
+# Update the data dictionary to include speed limits
+data = {0: {'grade': gradients[0], 'radius': track_radius[0], 'speed_limit': speed_limit_array[0]}}
+for i in range(1, int(distance_remaining / delta_s) + 1):
+    data[i * delta_s] = {
+        'grade': gradients[min(i, len(gradients) - 1)],
+        'radius': track_radius[min(i, len(track_radius) - 1)],
+        'speed_limit': speed_limit_array[min(i, len(speed_limit_array) - 1)]
+    }
+
+# Print the speed limit for each distance step
+# print("Speed limits from data:")
+# for d in data:
+#     print(f"Distance {d} m: Speed limit = {data[d]['speed_limit'] * 3.6:.2f} km/h")
+    
 model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve)
 end_time = time.time()
 
@@ -454,8 +545,7 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
 
     # Plot results
-    plt.rcParams.update({
-    'font.size': 15,
+    plt.rcParams.update({'font.size': 15,
     'axes.titlesize': 18,
     'axes.labelsize': 16,
     'xtick.labelsize': 14,
@@ -476,9 +566,7 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     # print(f"\nWind Speed: {WindSpeed:0.2f} m/s")
     # print(f"\nTime spent compiling: {end_time - start_time:.2f} seconds")
     plot_substation_powers(model, data)
-    plot_Pm_and_Pn_profile(model, data)
+    plot_Pm_and_Pn_profile(model, data, speed_limits=speed_limits_dict)
     plt.show()
 else:
     print("No results to save or plot due to solver termination condition.")
-
-
