@@ -78,7 +78,7 @@ def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpee
         sys.exit()
     return v_opt, P_opt
 
-def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve):
+def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve, rho, V0):
     start_train = time.time()
     v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init)
     D = data.keys()
@@ -116,14 +116,26 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
         model.cons.add(abs(model.P[d])<= distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9))  # Avoid division by zero
         model.cons.add(abs(model.P[d])<= distance_remaining *max_p_sub2/(d + 1e-9))  # Avoid division by zero
         
-        # Davies equation for power consumption
-        model.cons.add(model.P[d] == model.v[d] / eta * (
+        # Davies equation for power consumption + Electrical losses
+        model.cons.add(
+            model.P[d] == model.v[d] / eta * ( #mechanical losses
             0.5 * 1.225 * C_d * A * (model.v[d] + WindSpeed)**2 +
             C * m * 9.807 +
-            m * 9.807 * data[d]['grade'] +  # Gradient at this distance
+            m * 9.807 * data[d]['grade'] +
             m * (model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) +
-            mu_curve * m * (model.v[d]**2) / data[d]['radius']  # Additional power for curves
-        ))
+            mu_curve * m * (model.v[d]**2) / data[d]['radius']
+            ) + rho * distance_remaining * 0 * ( #electrical losses
+            (
+                model.v[d] / eta * (
+                0.5 * 1.225 * C_d * A * (model.v[d] + WindSpeed)**2 +
+                C * m * 9.807 +
+                m * 9.807 * data[d]['grade'] +
+                m * (model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) +
+                mu_curve * m * (model.v[d]**2) / data[d]['radius']
+                )
+            ) / V0
+            )**2
+        )
         
     solver = pyomo.SolverFactory('ipopt')
     results = solver.solve(model, tee=False)
@@ -513,7 +525,7 @@ for i in range(1, int(distance_remaining / delta_s) + 1):
         'speed_limit': speed_limit_array[min(i, len(speed_limit_array) - 1)]
     }
   
-model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve)
+model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve, rho, V0)
 end_time = time.time()
 
 if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
