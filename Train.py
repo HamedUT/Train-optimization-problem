@@ -496,13 +496,13 @@ Rotatory_inertia_factor = 0.0674
 m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
 A, C, C_d = 2.88*4.25, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
 eta = 0.857  # Efficiency of the train's propulsion system
-braking_eff = 0.1  # Regenerative braking efficiency
+braking_eff = 0.0  # Regenerative braking efficiency
 max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 max_p = 1393000 # W (max power)
 mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
 # Distance discretization
-total_time = 417 # (sec) From Substation 1 to Substation 2
+total_time = 400 # (sec) From Substation 1 to Substation 2
 delta_s = 50  # Distance step in meters
 
 # Time-dependent parameters
@@ -535,6 +535,7 @@ for i in range(1, int(distance_remaining / delta_s) + 1):
   
 model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve, Consider_electrical_losses, rho, V0)
 end_time = time.time()
+
 
 def save_power_velocity_acceleration_to_csv(filepath, model, data, delta_s):
     """
@@ -584,8 +585,8 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     print(f"\nTotal curve resistance sum over journey: {calculate_total_curve_energy(model, data, mu_curve, m, delta_s):.3f} kWh")
     # plot_substation_powers(model, data)
     plot_Pm_and_Pn_profile(model, data, speed_limits=speed_limits_dict)
-    # save_power_velocity_acceleration_to_csv("power_velocity_acceleration_results.csv", model, data, delta_s)
-    # print("Results saved to 'power_velocity_acceleration_results.csv'.")
+    # save_power_velocity_acceleration_to_csv("Train_Results.csv", model, data, delta_s)
+    # print("Results saved to 'Train_Results.csv'.")
     plt.show()
 else:
     print("No results to save or plot due to solver termination condition.")
