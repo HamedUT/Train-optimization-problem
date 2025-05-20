@@ -5,7 +5,7 @@ import os
 import random
 import time
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
-import csv  # <-- add this import
+import csv
 
 def generate_random_gradients(distance_remaining, delta_s, mode, max_gradient):
     # Generate gradients for the track profile. mode: "const" for constant gradient, "randm" for random profile.
@@ -80,7 +80,19 @@ def Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpee
 
 def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve, Consider_electrical_losses, rho, V0):
     start_train = time.time()
-    v_opt, P_opt = Initializer(delta_s, max_acc, max_braking, data, m, C_d, A, C, eta, WindSpeed, v_init)
+    v_opt = {}
+    P_opt = {}
+    with open("vopt_popt.csv", "r", newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                distance = int(float(row["Distance (m)"]))
+                velocity = float(row["Velocity (m/s)"])
+                power = float(row["Power (W)"])
+                v_opt[distance] = velocity
+                P_opt[distance] = power
+            except (KeyError, ValueError):
+                continue    
     D = data.keys()
     model = pyomo.ConcreteModel()
 
@@ -113,17 +125,16 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) <= max_braking)        
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
-        model.cons.add(abs(model.P[d])<= distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9))  # Avoid division by zero
-        model.cons.add(abs(model.P[d])<= distance_remaining *max_p_sub2/(d + 1e-9))  # Avoid division by zero
+        model.cons.add(abs(model.P[d]) <= ((distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9)) + distance_remaining *max_p_sub2/(d + 1e-9))/2)  # Avoid division by zero
         
         # Davies equation for power consumption + Electrical losses
         model.cons.add(
             model.P[d] == model.v[d] / eta * ( #mechanical losses
             0.5 * 1.225 * C_d * A * (model.v[d] + WindSpeed)**2 +
             C * m * 9.807 +
-            m * 9.807 * data[d]['grade'] +
+            m * 9.807 * data[d]['grade']*0 +
             m * (model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d])) +
-            mu_curve * m * (model.v[d]**2) / data[d]['radius']
+            mu_curve * m * (model.v[d]**2) / data[d]['radius']*0
             ) + rho * distance_remaining * Consider_electrical_losses * ( #electrical losses
             (
                 model.v[d] / eta * (
@@ -222,7 +233,7 @@ def plot_Pm_and_Pn_profile(model, data, speed_limits=None):
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
     # Plot power on primary y-axis
-    ax1.plot(distances, [pm - pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
+    ax1.plot(distances, [pm - braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
     ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
     ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
     ax1.set_xlim(left=0)
@@ -399,17 +410,26 @@ def calculate_Pm_per_d(model, data):
     return Pm_per_d, total_Pm
 
 def calculate_energy_consumption(model, data, delta_s):
-    total_energy = 0  # Initialize total energy in kWh
+    """
+    Calculates total energy consumption exactly as in the objective function:
+    sum of (Pm - Pn * braking_eff) * delta_t for each segment, in kWh.
+    """
+    total_energy = 0  # kWh
     for d in list(data.keys())[1:]:
         prev_d = d - delta_s
-        avg_power = (model.P[d]() + model.P[prev_d]()) / 2 # Calculate average power between two points (in W)
-        if model.v[d]() + model.v[prev_d]() > 0:
-            delta_t = 2 * delta_s / (model.v[d]() + model.v[prev_d]())
+        # Average delta_t for the segment
+        v1 = model.v[d]()
+        v0 = model.v[prev_d]()
+        if v1 + v0 > 0:
+            delta_t = 2 * delta_s / (v1 + v0)
         else:
             delta_t = 0
-        if avg_power < 0:
-            avg_power = avg_power * braking_eff  # Adjust for regenerative braking
-        total_energy += (avg_power * delta_t) / 3.6e6         # Energy for this segment in kWh
+        # Average Pm and Pn for the segment
+        Pm_avg = (model.Pm[d]() + model.Pm[prev_d]()) / 2
+        Pn_avg = (model.Pn[d]() + model.Pn[prev_d]()) / 2
+        # Energy for this segment (W * s = J), convert to kWh
+        segment_energy = (Pm_avg - Pn_avg * braking_eff) * delta_t / 3.6e6
+        total_energy += segment_energy
     return total_energy
 
 def calculate_total_curve_energy(model, data, mu_curve, m, delta_s):
@@ -486,6 +506,29 @@ def process_speed_limits(filepath, delta_s, d_init):
 
     return speed_limits_dict, speed_limit_array, distance_remaining
 
+def save_power_velocity_acceleration_to_csv(filepath, model, data, delta_s, total_energy=None):
+    """
+    Saves power, velocity, and acceleration data in terms of distance to a CSV file.
+    Optionally appends total energy consumption at the end.
+    """
+    with open(filepath, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Distance (km)", "Velocity (km/h)", "Power (MW)", "Acceleration (m/s²)"])  # Header
+        for d in data.keys():
+            distance_km = d / 1000  # Convert distance to km
+            velocity_kmh = model.v[d]() * 3.6  # Convert velocity to km/h
+            power_mw = (model.Pm[d]()-model.Pn[d]()*braking_eff) / 1e6  # Convert power to MW
+            if d == 0:
+                acceleration = 0  # No acceleration at the start
+            else:
+                prev_d = d - delta_s
+                acceleration = (model.v[d]() - model.v[prev_d]()) / (2 * delta_s / (model.v[d]() + model.v[prev_d]()))
+            writer.writerow([f"{distance_km:.3f}", f"{velocity_kmh:.3f}", f"{power_mw:.3f}", f"{acceleration:.3f}"])
+        # Append total energy at the end if provided
+        if total_energy is not None:
+            writer.writerow([])
+            writer.writerow(["Total Energy Consumption (kWh):" f"{total_energy:.3f}"])
+
 
 # Electrical Parameters
 rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
@@ -495,15 +538,15 @@ Consider_electrical_losses = 0 # Electrical losses in Train function (0: do not 
 Rotatory_inertia_factor = 0.0674
 m = 152743 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
 A, C, C_d = 2.88*4.25, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
-eta = 0.857  # Efficiency of the train's propulsion system
-braking_eff = 0.1  # Regenerative braking efficiency
+eta = 1  # Efficiency of the train's propulsion system
+braking_eff = 0.25  # Regenerative braking efficiency
 max_v, max_acc, max_braking = 44.444, 0.81, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 max_p = 1393000 # W (max power)
 mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
 # Distance discretization
-total_time = 417 # (sec) From Substation 1 to Substation 2
-delta_s = 50  # Distance step in meters
+total_time = 350 # (sec) From Substation 1 to Substation 2
+delta_s = 30  # Distance step in meters
 
 # Time-dependent parameters
 max_p_sub1 = 100.0 * 1000000 # W (max power for substation 1)
@@ -536,55 +579,13 @@ for i in range(1, int(distance_remaining / delta_s) + 1):
 model, termination_condition = train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d, A, C, eta, braking_eff, time_remaining, WindSpeed, v_init, max_p_sub1, max_p_sub2, mu_curve, Consider_electrical_losses, rho, V0)
 end_time = time.time()
 
-def save_power_velocity_acceleration_to_csv(filepath, model, data, delta_s):
-    """
-    Saves power, velocity, and acceleration data in terms of distance to a CSV file.
-    """
-    with open(filepath, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Distance (km)", "Velocity (km/h)", "Power (MW)", "Acceleration (m/s²)"])  # Header
-        for d in data.keys():
-            distance_km = d / 1000  # Convert distance to km
-            velocity_kmh = model.v[d]() * 3.6  # Convert velocity to km/h
-            power_mw = model.P[d]() / 1e6  # Convert power to MW
-            if d == 0:
-                acceleration = 0  # No acceleration at the start
-            else:
-                prev_d = d - delta_s
-                acceleration = (model.v[d]() - model.v[prev_d]()) / (2 * delta_s / (model.v[d]() + model.v[prev_d]()))
-            writer.writerow([f"{distance_km:.3f}", f"{velocity_kmh:.3f}", f"{power_mw:.3f}", f"{acceleration:.3f}"])
-
 if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
-    # Save results to file
-    # base_filename = f"t{time_remaining}_S{distance_remaining}"
-    # ext = ".txt"
-    # suffix_num = 0
-    # filename = f"{base_filename}_e{suffix_num}{ext}"
-    # while os.path.exists(filename):
-    #     suffix_num += 1
-    #     filename = f"{base_filename}_e{suffix_num}{ext}"
-
-    # with open(filename, 'w') as f:
-    #     f.write(f"P_sub1_max: {max_p_sub1} W, P_sub2_max: {max_p_sub2} W\n")
-    #     f.write(f"Braking Efficiency: {braking_eff*100}%\n")
-    #     f.write("Distance(m), Velocity(km/h), Power (MW), P_sub1 (MW), P_sub2 (MW)\n")  # Header
-    #     for d in data.keys():
-    #         v_out = 3.6 * model.v[d]()
-    #         if model.P[d]() < 0:
-    #             P_out = braking_eff * model.P[d]() / 1000000  # Added braking_eff for braking power
-    #         else:
-    #             P_out = model.P[d]() / 1000000
-    #         # P_sub1_out = model.P_sub1[d]() / 1000000
-    #         # P_sub2_out = model.P_sub2[d]() / 1000000
-    #         # f.write(f"{d}, {v_out:.3f}, {P_out:.6f}, {P_sub1_out:.6f}, {P_sub2_out:.6f}\n")
-
-    # Plot results
     plt.rcParams.update({'font.size': 15, 'axes.titlesize': 18, 'axes.labelsize': 16, 'xtick.labelsize': 14, 'ytick.labelsize': 14, 'legend.fontsize': 14, 'figure.titlesize': 20, 'font.family': 'serif', 'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']})
     print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, delta_s):.3f} kWh")
-    print(f"\nTotal curve resistance sum over journey: {calculate_total_curve_energy(model, data, mu_curve, m, delta_s):.3f} kWh")
+    # print(f"\nTotal curve resistance sum over journey: {calculate_total_curve_energy(model, data, mu_curve, m, delta_s):.3f} kWh")
     # plot_substation_powers(model, data)
     plot_Pm_and_Pn_profile(model, data, speed_limits=speed_limits_dict)
-    # save_power_velocity_acceleration_to_csv("power_velocity_acceleration_results.csv", model, data, delta_s)
+    save_power_velocity_acceleration_to_csv("Train_results.csv", model, data, delta_s, calculate_energy_consumption(model, data, delta_s))
     # print("Results saved to 'power_velocity_acceleration_results.csv'.")
     plt.show()
 else:

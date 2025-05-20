@@ -98,13 +98,13 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
         time += delta_t
         distance += avg_velocity * delta_t
 
-        power = avg_velocity / eta * (drag_force + rolling_resistance - m * deceleration)
+        power = avg_velocity * (drag_force + rolling_resistance - m * deceleration)
         regenerative_power = power * braking_eff if power < 0 else 0
         total_energy += (regenerative_power) * delta_t / 3.6e6
 
         distances.append(distance / 1000)
         velocities.append(v * 3.6)
-        powers.append((power + regenerative_power) / 1e6)
+        powers.append((regenerative_power) / 1e6)
         accelerations.append(-deceleration)
 
     # Convert distance to kilometers
@@ -115,9 +115,11 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
     if plot == True:
         print(f"Total energy consumption: {total_energy:.3f} kWh")
         plot_velocity_and_power_combined(distances, velocities, powers, accelerations)
-        save_velocity_and_power_data("velocity_power_results.csv", distances, velocities, powers, accelerations)
+        save_velocity_and_power_data("RMS_results.csv", distances, velocities, powers, accelerations, total_energy=total_energy)
 
     # Return the total distance traveled
+    if plot:
+        return distance_km, total_energy
     return distance_km
 
 def plot_velocity_and_power_combined(distances, velocities, powers, accelerations):
@@ -156,33 +158,36 @@ def plot_velocity_and_power_combined(distances, velocities, powers, acceleration
 
     plt.title('Velocity, Power Consumption, and Acceleration vs Distance')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
-    plt.show()
+    # plt.show()
 
-def save_velocity_and_power_data(filepath, distances, velocities, powers, accelerations):
+def save_velocity_and_power_data(filepath, distances, velocities, powers, accelerations, total_energy=None):
     """
     Saves velocity, power, and acceleration data to a file.
+    Optionally appends total energy consumption at the end.
     """
     with open(filepath, 'w') as file:
         file.write("Distance (km),Velocity (km/h),Power (MW),Acceleration (m/s²)\n")
         for d, v, p, a in zip(distances, velocities, powers, accelerations):
             file.write(f"{d:.3f},{v:.3f},{p:.3f},{a:.3f}\n")
+        if total_energy is not None:
+            file.write("\nTotal Energy Consumption (kWh):{:.3f}\n".format(total_energy))
 
 if __name__ == "__main__":
     max_target_velocity = 44  # Target velocity in m/s (160 km/h)
     speed_limit = 44
     max_acc = 0.81  # Maximum acceleration in m/s²
     max_braking = 0.5  # Maximum braking in m/s²
-    braking_eff = 0.1  # Regenerative braking efficiency (80%)
+    braking_eff = 0.25  # Regenerative braking efficiency (80%)
     m = 152743 * (1 + 0.0674)  # Train mass in kg
     C_d = 0.8  # Drag coefficient
     A = 2.88 * 4.25  # Frontal area in m²
     C = 0.002  # Rolling resistance coefficient
-    eta = 0.857  # Efficiency
+    eta = 1  # Efficiency
     WindSpeed = 0  # Wind speed in m/s
     v_init = 0  # Initial velocity in m/s
     max_p = 1393000  # Maximum power in watts (from Train.py)
-    total_time = 420  # Total time for the journey in seconds
-    total_distance = 10000  # Total distance for the journey in m
+    total_time = 350  # Total time for the journey in seconds
+    total_distance = 8500  # Total distance for the journey in m
     difference = 100000
     
 
@@ -191,7 +196,7 @@ if __name__ == "__main__":
 
     
     for target_velocity in [i * 0.1 for i in range(1, int(max_target_velocity * 10) + 1)]:  # Increment by 0.1 m/s
-        print(f"Calculating for target velocity: {target_velocity} m/s")
+        # print(f"Calculating for target velocity: {target_velocity} m/s")
         distance = calculate_combined_journey_exact_time(
             speed_limit,target_velocity, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=False
         )
@@ -207,9 +212,12 @@ if __name__ == "__main__":
     print(f"Closest distance: {closest_distance / 1000:.3f} km (Target distance: {total_distance / 1000:.3f} km)")
     
     # Calculate and plot the results for the optimal target velocity
+if __name__ == "__main__":
+    # ...existing code...
+    # Calculate and plot the results for the optimal target velocity
     distances, velocities, powers = [], [], []
-    calculate_combined_journey_exact_time(
-        target_velocity_final, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=True
+    _, total_energy = calculate_combined_journey_exact_time(
+        speed_limit, target_velocity_final, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=True
     )
-    print("Results saved to 'velocity_power_results.csv'.")
+    print("Results saved to 'RMS_results.csv'.")
 
