@@ -1,7 +1,7 @@
 import math
 import matplotlib.pyplot as plt
 
-def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=False):
+def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, delta_t, plot=False):
     """
     Combines the acceleration, cruising, and braking phases into a single journey,
     adjusting the cruising time to finish exactly at the given total time.
@@ -41,7 +41,6 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
             else:
                 power = v * (drag_force + rolling_resistance + m * acceleration)/eta  # Power calculation
         
-        delta_t = 2
         v_new = v + acceleration * delta_t        
         if v_new <= target_velocity:
             avg_velocity = (v + v_new) / 2
@@ -66,7 +65,6 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
     
     # Cruising phase
     if cruising_time > 0:
-        delta_t = 2
         for _ in range(int(cruising_time / delta_t)):  # Divide cruise time into 0.1s intervals
             drag_force = 0.5 * rho_air * C_d * A * (v + WindSpeed)**2
             rolling_resistance = C * m * g
@@ -91,7 +89,6 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
         rolling_resistance = C * m * g
         deceleration = max_braking
 
-        delta_t = 2
         v_new = max(0, v - deceleration * delta_t)
         avg_velocity = (v + v_new) / 2
         v = v_new
@@ -177,18 +174,21 @@ if __name__ == "__main__":
     speed_limit = 44
     max_acc = 0.81  # Maximum acceleration in m/s²
     max_braking = 0.5  # Maximum braking in m/s²
-    braking_eff = 0.25  # Regenerative braking efficiency (80%)
-    m = 152743 * (1 + 0.0674)  # Train mass in kg
+    
+    m = 391000 * (1 + 0.06)  # Train mass in kg
     C_d = 0.8  # Drag coefficient
-    A = 2.88 * 4.25  # Frontal area in m²
+    A = 3.02*4.67  # Frontal area in m²
     C = 0.002  # Rolling resistance coefficient
-    eta = 1  # Efficiency
     WindSpeed = 0  # Wind speed in m/s
     v_init = 0  # Initial velocity in m/s
-    max_p = 1393000  # Maximum power in watts (from Train.py)
-    total_time = 350  # Total time for the journey in seconds
-    total_distance = 8500  # Total distance for the journey in m
+    max_p = 359900*6  # Maximum power in watts (from Train.py)
+    
+    braking_eff = 0.893  # Regenerative braking efficiency (80%)
+    eta = 1  # Efficiency
+    total_time = 380  # Total time for the journey in seconds
+    total_distance = 10000  # Total distance for the journey in m
     difference = 100000
+    delta_t = 1  # Time step for calculations in seconds
     
 
     target_velocity_final = 0  # Initialize with a default value
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     for target_velocity in [i * 0.1 for i in range(1, int(max_target_velocity * 10) + 1)]:  # Increment by 0.1 m/s
         # print(f"Calculating for target velocity: {target_velocity} m/s")
         distance = calculate_combined_journey_exact_time(
-            speed_limit,target_velocity, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=False
+            speed_limit,target_velocity, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, delta_t, plot=False
         )
         difference = abs(total_distance - distance * 1000)  # Convert distance to meters for comparison
         
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     # Calculate and plot the results for the optimal target velocity
     distances, velocities, powers = [], [], []
     _, total_energy = calculate_combined_journey_exact_time(
-        speed_limit, target_velocity_final, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=True
+        speed_limit, target_velocity_final, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, delta_t, plot=True
     )
     print("Results saved to 'RMS_results.csv'.")
 

@@ -183,9 +183,15 @@ def train(rho_1, rho_2, S, V0, delta_t, max_acc, max_p, data, m, C_d, A, C, thet
             a_out = (model.v[t]() - model.v[data[t]['t_prev']]())
             #print('  ', t, ':', f"{v_out:.2f}", 'km/h','  ', f"{s_out:.3f}", 'km','  ', f"{a_out:.2f}", 'km/h/s','  ', f"{p_out:.0f}", 'W','  ', f"{V_out:.1f}", 'Volts')
             print('  ', t, ':', f"{v_out:.2f}", 'km/h','  ', f"{s_out:.3f}", 'km','  ', f"{a_out:.4f}", 'm/s2','  ', f"{p_out:.6f}", 'MW')
-    print('Value of O.F. = {:.3f} kWh'.format((model.of())/3600000*total_time))
-     
-    return model, results.solver.termination_condition  # Add return statement  # Add return statement
+    # The objective function value is sum(model.Pm[t] - model.Pn[t]*braking_eff for t in T)
+    # This is a sum of power (in W) over all time steps (each step is 1 second).
+    # To get energy in kWh: sum_power * delta_t / 3.6e6
+    total_energy_Wh = model.of() * delta_t / 3600  # in Wh
+    total_energy_kWh = model.of() * delta_t / 3.6e6  # in kWh
+
+    print('Value of O.F. = {:.3f} kWh'.format(total_energy_kWh))
+
+    return model, results.solver.termination_condition
 
 def plot_velocity_profile(model, data):
     # Extract time and velocity data

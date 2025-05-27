@@ -144,9 +144,13 @@ def calculate_combined_journey_exact_time(total_distance, delta_t, speed_limit, 
                 velocities_final = velocities
                 powers_final = powers
                 accelerations_final = accelerations
+                acceleration_time_final = acceleration_time
+                cruising_time_final = cruising_time
+                coasting_time_final = coasting_time
+                braking_time_final = braking_time
                   
     if plot == True:
-        print(f"Difference: {closest_difference:.3f} m, braking: {braking_speed*3.6:.1f} km/h, Max speed: {speed_limit*3.6:.1f} km/h, acc time: {acceleration_time:.1f} cruising: {cruising_time:.1f} s, coasting: {coasting_time:.1f} s, braking time: {braking_time:.1f} s")
+        print(f"Difference: {closest_difference:.3f} m, braking: {braking_speed_final*3.6:.1f} km/h, Max speed: {speed_limit*3.6:.1f} km/h, acc time: {acceleration_time_final:.1f} cruising: {cruising_time_final:.1f} s, coasting: {coasting_time_final:.1f} s, braking time: {braking_time_final:.1f} s")
         print(f"Total energy consumption: {total_energy_final:.3f} kWh, braking speed: {braking_speed_final*3.6:.1f} km/h")
         plot_velocity_and_power_combined(distances_final, velocities_final, powers_final, accelerations_final)
         save_velocity_and_power_data("EETC_results.csv", distances_final, velocities_final, powers_final, accelerations_final, total_energy=total_energy_final)
@@ -205,24 +209,26 @@ def save_velocity_and_power_data(filepath, distances, velocities, powers, accele
 
 if __name__ == "__main__":
     speed_limit_allowed = 44
-    delta_t = 2  # Time step in seconds
+    delta_t = 1  # Time step in seconds
     max_acc = 0.81  # Maximum acceleration in m/s²
     max_braking = 0.5  # Maximum braking in m/s²
-    braking_eff = 0.25  # Regenerative braking efficiency (80%)
-    m = 152743 * (1 + 0.0674)  # Train mass in kg
+    
+    m = 391000 * (1 + 0.06)  # Train mass in kg
     C_d = 0.8  # Drag coefficient
-    A = 2.88 * 4.25  # Frontal area in m²
+    A = 3.02*4.67  # Frontal area in m²
     C = 0.002  # Rolling resistance coefficient
-    eta = 1  # Efficiency
     WindSpeed = 0  # Wind speed in m/s
     v_init = 0  # Initial velocity in m/s
-    max_p = 1393000  # Maximum power in watts (from Train.py)
-    total_time = 350  # Total time for the journey in seconds
-    total_distance = 8500  # Total distance for the journey in m
+    max_p = 359900*6  # Maximum power in watts (from Train.py)
+    
+    braking_eff = 0.893  # Regenerative braking efficiency (80%)
+    eta = 1  # Efficiency
+    total_time = 380  # Total time for the journey in seconds
+    total_distance = 10000  # Total distance for the journey in m
     difference = 100000
 
 closest_difference = float('inf')  # Initialize with a large value
-for speed_limit in [i * 1 for i in range(0, int(speed_limit_allowed) + 1)]:  # Increment by 0.1 m/s
+for speed_limit in [i * 0.2 for i in range(0, 5*int(speed_limit_allowed) + 1)]:  # Increment by 0.1 m/s
     braking_speed_final, distance_final = calculate_combined_journey_exact_time(total_distance, delta_t, speed_limit, max_acc, max_braking, m, C_d, A, C, eta, WindSpeed, v_init, max_p, braking_eff, total_time, plot=False)    
     difference = abs(total_distance - distance_final)  # Convert distance to meters for comparison
     if difference < closest_difference:            

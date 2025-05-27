@@ -29,8 +29,8 @@ max_v = 44.444 # m/s = 160 km/h (VIRM)
 max_acc = 0.81 # m/s2 (2.76 km/h/s) (VIRM)
 
 # Enviromental Variables
-total_time = 400 # (sec) From Substation 1 to Substation 2
-S = 8500 # (m) Length between Substation 1 and Substation 2
+total_time = 600 # (sec) From Substation 1 to Substation 2
+S = 1000 # (m) Length between Substation 1 and Substation 2
 delta_t = 1 # Seconds
 theta = 0.000 # (Gradient)
 WindSpeed = 0 # m/s (Wind speed)

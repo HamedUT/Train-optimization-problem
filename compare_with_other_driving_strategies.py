@@ -22,13 +22,41 @@ def read_clean_csv(filepath):
     """Reads only the data rows from the CSV, skipping summary lines at the end."""
     with open(filepath, 'r', encoding='latin1') as f:
         lines = f.readlines()
-    # Keep only lines that have 4 columns (data lines)
-    data_lines = [line for line in lines if line.count(',') == 3 and not line.startswith("Distance")]
+    # Keep only lines that have 5 columns (data lines, now with time)
+    data_lines = [line for line in lines if line.count(',') == 4 and not line.startswith("Distance")]
     # Add header back
-    header = "Distance (km),Velocity (km/h),Power (MW),Acceleration (m/s²)\n"
+    header = "Distance (km),Time (s),Velocity (km/h),Power (MW),Acceleration (m/s²)\n"
     clean_csv = header + ''.join(data_lines)
     from io import StringIO
     return pd.read_csv(StringIO(clean_csv))
+
+def plot_power_comparison_mc_vs_model(file_model, file_mc, distance, time, RB):
+    """
+    Plots a comparison of power profiles between Model and MC strategies only, using time as x-axis.
+    """
+    te_model = extract_total_energy(file_model)
+    te_mc = extract_total_energy(file_mc)
+
+    data_model = read_clean_csv(file_model)
+    data_mc = read_clean_csv(file_mc)
+
+    times_model = data_model['Time (s)']
+    powers_model = data_model['Power (MW)']
+    times_mc = data_mc['Time (s)']
+    powers_mc = data_mc['Power (MW)']
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(times_model, powers_model, '-', color='orange', label=f'Power (Model) [{te_model:.2f} kWh]', linewidth=2)
+    plt.plot(times_mc, powers_mc, '-', color='green', label=f'Power (MC) [{te_mc:.2f} kWh]', linewidth=2)
+    plt.xlabel('Time (s)')
+    plt.ylabel('Power (MW)')
+    plt.title('Power Comparison: Model vs MC (Time-Based)')
+    plt.legend(loc='upper right')
+    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    folder = "Strategies comparison plots"
+    os.makedirs(folder, exist_ok=True)
+    filename = os.path.join(folder, f"power_comparison_Model_vs_MC_time_{distance}km_{time}s_{RB}RB.png")
+    plt.savefig(filename, dpi=600, bbox_inches='tight', transparent=True)
 
 def plot_velocity_comparison(file1, file2, file3, file4, distance, time, RB):
     te1 = extract_total_energy(file1)
@@ -153,11 +181,15 @@ if __name__ == "__main__":
     file3 = 'MC_results.csv'
     file4 = 'EETC_results.csv'
 
-    distance = input("Enter the distance (in km): ")
-    time = input("Enter the time (in s): ")
-    RB = input("Enter the regenerative braking efficiency: ")
+    # distance = input("Enter the distance (in km): ")
+    # time = input("Enter the time (in s): ")
+    # RB = input("Enter the regenerative braking efficiency: ")
+    distance = 10
+    time = 380
+    RB = 0.893
 
     plot_velocity_comparison(file1, file2, file3, file4, distance, time, RB)
     plot_power_comparison(file1, file2, file3, file4, distance, time, RB)
     plot_velocity_and_power_combined(file1, file2, file3, file4, distance, time, RB)
+    plot_power_comparison_mc_vs_model(file2, file3, distance, time, RB)
     plt.show()
