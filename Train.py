@@ -110,15 +110,13 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
-    
-    # Objective Function
-    '''
-    The objective function's old version is commented out and replaced by
+    model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(1200, 1925)) # Voltage 
+
+    # model.of = pyomo.Objective(expr=sum(model.Pm[d] - model.Pn[d] * braking_eff for d in D), sense=pyomo.minimize)
+    '''The objective function's old version is commented out and replaced by
     a new version that considers the energy consumption, it factors in the
     time taken to travel each segment and not just the distance.
-    Doing this changed the weird robotic smoothness velocity plot to a more
-    realistic one.'''
-    # model.of = pyomo.Objective(expr=sum(model.Pm[d] - model.Pn[d] * braking_eff for d in D), sense=pyomo.minimize)
+    Doing this changed the weird robotic smoothness velocity plot to a more realistic one.'''
     model.of = pyomo.Objective(expr=sum((model.Pm[d]/eta - model.Pn[d] * braking_eff)*(2 * delta_s / (model.v[d] + model.v[d - delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
     
     # Constraints
@@ -139,11 +137,11 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= max_braking)        
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
-        model.cons.add(abs(model.P[d]) <= (distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9)))  # Avoid division by zero
-        model.cons.add(abs(model.P[d]) <= (distance_remaining *max_p_sub2/(d + 1e-9)))  # Avoid division by zero
+        # model.cons.add(abs(model.P[d]) <= (distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9)))  # Avoid division by zero
+        # model.cons.add(abs(model.P[d]) <= (distance_remaining *max_p_sub2/(d + 1e-9)))  # Avoid division by zero
+        model.cons.add(model.P[d] == model.V[d] * ((V0 - model.V[d]) / (rho * d + 1e-9) + (V0 - model.V[d]) / (rho * (distance_remaining - d) + 1e-9)))  # Electrical power consumption
         
-        '''P is the electrical power consumption when P>0, and
-        the regenerative braking power when P<0.'''
+        '''P is the electrical power consumption when P>0, and the regenerative braking power when P<0.'''
         model.cons.add(
             model.P[d] == model.v[d] * ( #mechanical losses
             0.5 * 1.225 * C_d * A * (model.v[d] + WindSpeed)**2 +
@@ -389,22 +387,26 @@ def plot_voltage_profile(model, data):
     distances = []
     voltages = []
 
+    # Use model.V if available, otherwise fall back to calculation
+    has_voltage_var = hasattr(model, 'V')
     for d in data.keys():
         distances.append(d / 1000)  # Convert distance to km
-
-        # Calculate voltage using the given formula
-        if d == 0:
-            voltages.append(V0)  # Initial voltage
+        if has_voltage_var:
+            voltages.append(model.V[d]())
         else:
-            P = model.P[d]()
-            V = V0 - P / ((V0 / (rho * d + 1e-9)) + (V0 / (rho * (distance_remaining - d + 1e-9))))
-            voltages.append(V)
+            # Calculate voltage using the given formula
+            if d == 0:
+                voltages.append(V0)  # Initial voltage
+            else:
+                P = model.P[d]()
+                V = V0 - P / ((V0 / (rho * d + 1e-9)) + (V0 / (rho * (distance_remaining - d + 1e-9))))
+                voltages.append(V)
 
     plt.figure(figsize=(12, 6))
     plt.plot(distances, voltages, 'b-', linewidth=2)
-    plt.xlabel('Distance (km)')
-    plt.ylabel('Voltage (V)')
-    plt.title(f'Train Voltage Profile (S={distance_remaining/1000} km)')
+    plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
+    plt.ylabel('Voltage (V)', fontsize=16, fontweight='bold')
+    plt.title(f'Train Voltage Profile (S={distance_remaining/1000} km)', fontsize=18, fontweight='bold')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
 
 def plot_distance_vs_time(model, data):
@@ -588,7 +590,7 @@ def save_power_velocity_acceleration_to_csv(filepath, model, data, delta_s, tota
 
 
 # Electrical Parameters
-rho, V0 = 0.00003, 1500 # Ohms/m, Voltage (V)
+rho, V0 = 0.00003, 1800 # Ohms/m, Voltage (V)
 Consider_electrical_losses = 0 # Electrical losses in Train function (0: do not consider, 1: consider)
 
 # Train Parameters (SNG)
@@ -596,7 +598,7 @@ Rotatory_inertia_factor = 0.06
 m = 391000 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
 A, C, C_d = 3.02*4.67, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
 eta = 1  # Efficiency of the train's propulsion system (when converting electrical energy to mechanical energy)
-braking_eff = 0.893  # Regenerative braking efficiency (when converting electrical energy to mechanical energy)
+braking_eff = 1#0.893  # Regenerative braking efficiency (when converting electrical energy to mechanical energy)
 max_v, max_acc, max_braking = 44.444, 0.768, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 max_p = 359900*6 # W (max power)
 mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
@@ -617,7 +619,7 @@ t_init = 0 * 60 # Initial time (s)
 d_init = 0 * 1000 # Initial distance (m)
 time_remaining = total_time - t_init # Remaining time (s), Remaining distance (m)
 
-speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimit_Rtd_Rta.csv"
+speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimit_Rta_Gda.csv"
 speed_limits_dict, speed_limit_array, distance_remaining = process_speed_limits(speed_limit_csv_path, delta_s, d_init)
 print(f"Distance remaining: {distance_remaining} m")
 
@@ -643,6 +645,7 @@ if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.Terminati
     plot_substation_powers(model, data)
     plot_Pm_and_Pn_profile(model, data, speed_limits=speed_limits_dict)
     plot_Pm_and_Pn_profile_time(model, data, speed_limits=speed_limits_dict)
+    plot_voltage_profile(model, data)
     save_power_velocity_acceleration_to_csv("Train_results.csv", model, data, delta_s, calculate_energy_consumption(model, data, delta_s))
     # print("Results saved to 'power_velocity_acceleration_results.csv'.")
     plt.show()
