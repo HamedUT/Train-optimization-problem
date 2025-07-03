@@ -110,14 +110,15 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
-    model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(1200, 1925)) # Voltage 
+    model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(1200, 1925)) # Voltage (according to ProRail safety standards)
 
     # model.of = pyomo.Objective(expr=sum(model.Pm[d] - model.Pn[d] * braking_eff for d in D), sense=pyomo.minimize)
     '''The objective function's old version is commented out and replaced by
     a new version that considers the energy consumption, it factors in the
     time taken to travel each segment and not just the distance.
     Doing this changed the weird robotic smoothness velocity plot to a more realistic one.'''
-    model.of = pyomo.Objective(expr=sum((model.Pm[d]/eta - model.Pn[d] * braking_eff)*(2 * delta_s / (model.v[d] + model.v[d - delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
+    #Indecisive on the presence of eta, depends on the plot visually.
+    model.of = pyomo.Objective(expr=sum((model.Pm[d]/eta - braking_eff*model.Pn[d])*(2 * delta_s / (model.v[d] + model.v[d - delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
     
     # Constraints
     model.cons = pyomo.ConstraintList()
@@ -125,6 +126,7 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
     print(f"Final distance: {final_distance} m")
     # Initial conditions
     model.v[0].fix(v_init)
+    # model.V[0].fix(V0)
     model.Pm[0].fix(0)
     model.Pn[0].fix(0)
     model.v[final_distance].fix(0)
@@ -137,6 +139,10 @@ def train(distance_remaining, delta_s, max_acc, max_braking, max_p, data, m, C_d
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= max_braking)        
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
+        '''Understood that the substation energy availaiblity is not a concern.
+        Instead, the voltage drop is the main concern.
+        It seems that the battery is going to be used to compensate for the voltage drop.
+        Therefore, the energy availablity constraints are not needed.'''
         # model.cons.add(abs(model.P[d]) <= (distance_remaining*max_p_sub1/(distance_remaining - d + 1e-9)))  # Avoid division by zero
         # model.cons.add(abs(model.P[d]) <= (distance_remaining *max_p_sub2/(d + 1e-9)))  # Avoid division by zero
         model.cons.add(model.P[d] == model.V[d] * ((V0 - model.V[d]) / (rho * d + 1e-9) + (V0 - model.V[d]) / (rho * (distance_remaining - d) + 1e-9)))  # Electrical power consumption
@@ -387,20 +393,9 @@ def plot_voltage_profile(model, data):
     distances = []
     voltages = []
 
-    # Use model.V if available, otherwise fall back to calculation
-    has_voltage_var = hasattr(model, 'V')
     for d in data.keys():
         distances.append(d / 1000)  # Convert distance to km
-        if has_voltage_var:
-            voltages.append(model.V[d]())
-        else:
-            # Calculate voltage using the given formula
-            if d == 0:
-                voltages.append(V0)  # Initial voltage
-            else:
-                P = model.P[d]()
-                V = V0 - P / ((V0 / (rho * d + 1e-9)) + (V0 / (rho * (distance_remaining - d + 1e-9))))
-                voltages.append(V)
+        voltages.append(model.V[d]())  # Use voltage from the model
 
     plt.figure(figsize=(12, 6))
     plt.plot(distances, voltages, 'b-', linewidth=2)
@@ -491,7 +486,7 @@ def calculate_energy_consumption(model, data, delta_s):
         Pm_avg = (model.Pm[d]() + model.Pm[prev_d]()) / 2
         Pn_avg = (model.Pn[d]() + model.Pn[prev_d]()) / 2
         # Energy for this segment (W * s = J), convert to kWh
-        segment_energy = (Pm_avg - Pn_avg * braking_eff) * delta_t / 3.6e6
+        segment_energy = (Pm_avg - Pn_avg * braking_eff * eta) * delta_t / 3.6e6
         total_energy += segment_energy
     return total_energy
 
@@ -597,14 +592,14 @@ Consider_electrical_losses = 0 # Electrical losses in Train function (0: do not 
 Rotatory_inertia_factor = 0.06
 m = 391000 * (1 + Rotatory_inertia_factor) # kg (train weight, but should be variable later)
 A, C, C_d = 3.02*4.67, 0.002, 0.8 # m^2 (Frontal area), (Rolling resistance coefficient), (Drag coefficient)
-eta = 1  # Efficiency of the train's propulsion system (when converting electrical energy to mechanical energy)
-braking_eff = 1#0.893  # Regenerative braking efficiency (when converting electrical energy to mechanical energy)
+eta = 0.87  # Efficiency of the train's propulsion system (when converting electrical energy to mechanical energy)
+braking_eff = 0.89  # Regenerative braking efficiency (when converting electrical energy to mechanical energy)
 max_v, max_acc, max_braking = 44.444, 0.768, 0.5 # m/s = 160 km/h (max velocity), m/s2 (max acceleration), (max braking)
 max_p = 359900*6 # W (max power)
 mu_curve = 0.001 # Curve resistance coefficient (m/s^2) (assumed value, can be adjusted based on specific conditions)
 
 # Distance discretization
-total_time = 7.25*60 # (sec) From Substation 1 to Substation 2
+total_time = 8.0*60 # (sec) From Substation 1 to Substation 2
 delta_s = 40  # Distance step in meters
 
 # Time-dependent parameters
