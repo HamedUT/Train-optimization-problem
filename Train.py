@@ -14,6 +14,8 @@ class ElectricalParams:
     V0: int = 1800        # Operational Voltage (V)
     cat_voltage_bound: list = (1200, 1925)  # [min, max] catenary voltage
     Consider_electrical_losses: int = 0     # 0: do not consider, 1: consider
+    max_p_sub1: float = 30.5e6       # W
+    max_p_sub2: float = 30.0e6       # W
 @dataclass
 class TrainParams:
     m: float = 391000               # kg
@@ -25,14 +27,12 @@ class TrainParams:
     max_v: float = 44.444           # m/s
     max_acc: float = 0.768          # m/s^2
     max_braking: float = 0.5        # m/s^2
-    max_p: float = 359900 * 6       # W
+    max_p: float = 359900 * 120       # W
     mu_curve: float = 0.001         # Curve resistance coefficient
 @dataclass
 class SimulationParams:
     total_time: float = 9.0 * 60    # sec
     delta_s: int = 100              # m
-    max_p_sub1: float = 3.5e6       # W
-    max_p_sub2: float = 3.0e6       # W
     WindSpeed: float = 0            # m/s
     v_init: float = 0 / 3.6         # m/s
     t_init: float = 0 * 60          # s
@@ -62,7 +62,7 @@ def main():
         print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, simulation):.3f} kWh")
         plot_substation_powers(model, data, simulation)
         plot_Pm_and_Pn_profile(model, data, simulation, speed_limits=speed_limits_dict)
-        plot_Pm_and_Pn_profile_time(model, data, simulation, speed_limits=speed_limits_dict)
+        # plot_Pm_and_Pn_profile_time(model, data, simulation, speed_limits=speed_limits_dict)
         plot_voltage_profile(model, data, simulation)
         save_power_velocity_acceleration_to_csv("Train_results.csv", model, data, simulation, calculate_energy_consumption(model, data, simulation))
         plt.show()
@@ -134,6 +134,7 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
     model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(electrical.cat_voltage_bound[0], electrical.cat_voltage_bound[1])) # Voltage (according to ProRail safety standards)
 
+    '''If the objective function is changed, the plot functions and calculate_energy_consumption function must be updated accordingly.'''
     model.of = pyomo.Objective(expr=sum((model.Pm[d]/train.eta - train.braking_eff*model.Pn[d])*(2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
     
     # Constraints
@@ -152,8 +153,8 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_braking)
         model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
-        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining*simulation.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
-        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining *simulation.max_p_sub2/(d + 1e-9)))
+        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
+        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))
         model.cons.add(model.P[d] == model.V[d] * ((electrical.V0 - model.V[d]) / (electrical.rho * d + 1e-9) + (electrical.V0 - model.V[d]) / (electrical.rho * (simulation.distance_remaining - d) + 1e-9)))  # Electrical power consumption
         model.cons.add(
             model.P[d] == model.v[d] * ( 
@@ -171,7 +172,7 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
         
     solver = pyomo.SolverFactory('ipopt')
     results = solver.solve(model, tee=False)
-    return model, results.solver.termination_condition  # Add return statement  # Add return statement
+    return model, results.solver.termination_condition  # Add return statement
 
 def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed_limits=None):
     # Initialize with zero at the first point
@@ -196,7 +197,7 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
     # Plot power on primary y-axis
-    ax1.plot(times, [pm - train.braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
+    ax1.plot(times, [pm/train.eta - train.braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
     ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
     ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
     ax1.set_xlim(left=0)
@@ -204,7 +205,7 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
 
     # Add more grid lines for y-axis only
-    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.7)
+    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.5)
     ax1.xaxis.grid(False)
 
     # Add more ticks for y axis
@@ -246,7 +247,7 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)   
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)   
 
 def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limits=None):
     # Initialize with zero at the first point
@@ -271,7 +272,7 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
     # Plot power on primary y-axis
-    ax1.plot(distances, [pm - train.braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
+    ax1.plot(distances, [pm/train.eta - train.braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
     ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
     ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
     ax1.set_xlim(left=0)
@@ -279,14 +280,14 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
 
     # Add more grid lines for y-axis only
-    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.7)
-    ax1.xaxis.grid(False)
+    ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
+    ax1.xaxis.grid(True, which='major', linestyle='--', alpha=0.5)
 
     # Add more ticks for y axis
-    y_major_locator = MultipleLocator(0.2)  # Major ticks every 0.2 MW
-    y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
+    y_major_locator = MultipleLocator(0.25)  # Major ticks every 0.25 MW
+    # y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
     ax1.yaxis.set_major_locator(y_major_locator)
-    ax1.yaxis.set_minor_locator(y_minor_locator)
+    # ax1.yaxis.set_minor_locator(y_minor_locator)
 
     # Create second y-axis for velocity (move from third to second axis)
     ax2 = ax1.twinx()
@@ -317,7 +318,7 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    # plt.grid(True, which='both', linestyle='--', alpha=0.5)
     
 def plot_substation_powers(model, data, simulation: SimulationParams):
     distances = []
@@ -344,14 +345,14 @@ def plot_substation_powers(model, data, simulation: SimulationParams):
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
 
     # Add more grid lines for y-axis only
-    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.7)
-    ax1.xaxis.grid(False)
+    ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
+    ax1.xaxis.grid(True)
 
     # Add more ticks for y axis
-    y_major_locator = MultipleLocator(0.2)  # Major ticks every 0.2 MW
-    y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
+    y_major_locator = MultipleLocator(0.25)  # Major ticks every 0.2 MW
+    # y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
     ax1.yaxis.set_major_locator(y_major_locator)
-    ax1.yaxis.set_minor_locator(y_minor_locator)
+    # ax1.yaxis.set_minor_locator(y_minor_locator)
 
     minutes, seconds = int(simulation.time_remaining // 60), int(simulation.time_remaining % 60)
     plt.title(f'Substation Power Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
@@ -369,7 +370,7 @@ def plot_voltage_profile(model, data, simulation: SimulationParams):
     plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
     plt.ylabel('Voltage (V)', fontsize=16, fontweight='bold')
     plt.title(f'Train Voltage Profile (S={simulation.distance_remaining/1000} km)', fontsize=18, fontweight='bold')
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
 def plot_distance_vs_time(model, data, simulation: SimulationParams):
     # Extract time and distance data
@@ -386,7 +387,7 @@ def plot_distance_vs_time(model, data, simulation: SimulationParams):
     plt.xlabel('Time (seconds)')
     plt.ylabel('Distance (km)')
     plt.title(f'Train Distance vs. Time (S={simulation.distance_remaining/1000} km)')
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
     
 def plot_gradients_vs_distance(data, simulation: SimulationParams):
     distances, gradients = [],[]
@@ -405,7 +406,7 @@ def plot_gradients_vs_distance(data, simulation: SimulationParams):
     plt.ylim(-0.005, 0.005)  # Set y-axis limits to keep it constant
     
     # Add horizontal and vertical gridlines
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
 def calculate_energy_consumption(model, data, simulation: SimulationParams):
     """Calculates total energy consumption exactly as in the objective function:
@@ -424,7 +425,7 @@ def calculate_energy_consumption(model, data, simulation: SimulationParams):
         Pm_avg = (model.Pm[d]() + model.Pm[prev_d]()) / 2
         Pn_avg = (model.Pn[d]() + model.Pn[prev_d]()) / 2
         # Energy for this segment (W * s = J), convert to kWh
-        segment_energy = (Pm_avg - Pn_avg * train.braking_eff) * delta_t / 3.6e6
+        segment_energy = (Pm_avg/train.eta - Pn_avg * train.braking_eff) * delta_t / 3.6e6
         total_energy += segment_energy
     return total_energy
 
@@ -537,7 +538,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
             total_time=simulation.total_time,
             delta_s=simulation.delta_s,
             max_p_sub1=max_p_sub1_val,
-            max_p_sub2=simulation.max_p_sub2,
+            max_p_sub2=electrical.max_p_sub2,
             WindSpeed=simulation.WindSpeed,
             v_init=simulation.v_init,
             t_init=simulation.t_init,
@@ -604,7 +605,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
     plt.ylabel('Velocity (km/h)', fontsize=16, fontweight='bold')
     plt.title('Velocity Profile Comparison')
     plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
     # Plot power profiles (time)
     plt.figure(figsize=(12, 6))
@@ -629,7 +630,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
     plt.ylabel('Power (MW)', fontsize=16, fontweight='bold')
     plt.title('Power Profile Comparison')
     plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
     # Plot velocity profiles (distance)
     plt.figure(figsize=(12, 6))
@@ -666,7 +667,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
     plt.ylabel('Velocity (km/h)', fontsize=16, fontweight='bold')
     plt.title('Velocity Profile Comparison (Distance)')
     plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
     # Plot power profiles (distance)
     plt.figure(figsize=(12, 6))
@@ -690,7 +691,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
     plt.ylabel('Power (MW)', fontsize=16, fontweight='bold')
     plt.title('Power Profile Comparison (Distance)')
     plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
     plt.show()
 
 if __name__ == "__main__":

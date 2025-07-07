@@ -79,8 +79,8 @@ def plot_velocity_comparison(file1, file2, file3, file4, distance, time, RB):
     velocities4 = data4['Velocity (km/h)']
 
     plt.figure(figsize=(12, 6))
-    plt.plot(distances1, velocities1, '--', color='red', label=f'Velocity (RMS) [{te1:.2f} kWh]', linewidth=2)
     plt.plot(distances2, velocities2, '--', color='orange', label=f'Velocity (Model) [{te2:.2f} kWh]', linewidth=2)
+    plt.plot(distances1, velocities1, '--', color='red', label=f'Velocity (RMS) [{te1:.2f} kWh]', linewidth=2)
     plt.plot(distances3, velocities3, '--', color='green', label=f'Velocity (MC) [{te3:.2f} kWh]', linewidth=2)
     plt.plot(distances4, velocities4, '--', color='purple', label=f'Velocity (EETC) [{te4:.2f} kWh]', linewidth=2)
     plt.xlabel('Distance (km)')
@@ -181,15 +181,12 @@ if __name__ == "__main__":
     file3 = 'MC_results.csv'
     file4 = 'EETC_results.csv'
 
-    # distance = input("Enter the distance (in km): ")
-    # time = input("Enter the time (in s): ")
-    # RB = input("Enter the regenerative braking efficiency: ")
-    distance = 10
-    time = 380
-    RB = 0.893
+    distance = 10 # distance = input("Enter the distance (in km): ")
+    time = 390 # time = input("Enter the time (in s): ")
+    RB = 0.5 # RB = input("Enter the regenerative braking efficiency: ")
 
     plot_velocity_comparison(file1, file2, file3, file4, distance, time, RB)
     plot_power_comparison(file1, file2, file3, file4, distance, time, RB)
-    plot_velocity_and_power_combined(file1, file2, file3, file4, distance, time, RB)
-    plot_power_comparison_mc_vs_model(file2, file3, distance, time, RB)
+    # plot_velocity_and_power_combined(file1, file2, file3, file4, distance, time, RB)
+    # plot_power_comparison_mc_vs_model(file2, file3, distance, time, RB)
     plt.show()

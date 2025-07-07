@@ -239,8 +239,8 @@ def save_velocity_and_power_data(filepath, distances, velocities, powers, accele
 
 if __name__ == "__main__":
     speed_limit_allowed = 44
-    delta_t = 1  # Time step in seconds
-    max_acc = 0.81  # Maximum acceleration in m/s²
+    delta_t = 0.9  # Time step in seconds
+    max_acc = 0.768  # Maximum acceleration in m/s²
     max_braking = 0.5  # Maximum braking in m/s²
     m = 391000  * (1 + 0.06)  # Train mass in kg
     C_d = 0.8  # Drag coefficient
@@ -250,7 +250,7 @@ if __name__ == "__main__":
     v_init = 0  # Initial velocity in m/s
     max_p = 359900*6  # Maximum power in watts (from Train.py)
     
-    braking_eff = 0.893  # Regenerative braking efficiency (80%)
+    braking_eff = 0.9  # Regenerative braking efficiency (80%)
     eta = 1  # Efficiency
     total_time = 380  # Total time for the journey in seconds
     total_distance = 10000  # Total distance for the journey in m
@@ -258,7 +258,7 @@ if __name__ == "__main__":
     
     
     difference = 10000000
-    delta_s = 30 # should be the same with Train.py if i want the output be the input of initializer
+    delta_s = 25 # should be the same with Train.py if i want the output be the input of initializer
 
 
 closest_difference = float('inf')  # Initialize with a large value
