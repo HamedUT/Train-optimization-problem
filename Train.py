@@ -37,7 +37,7 @@ class SimulationParams:
     v_init: float = 0 / 3.6         # m/s
     t_init: float = 0 * 60          # s
     d_init: float = 0 * 1000        # m
-    speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimit_Rta_Gda.csv"
+    speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimits\SpeedLimit_Rta_Gda.csv"
 
 electrical = ElectricalParams()
 train = TrainParams()
