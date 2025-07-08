@@ -16,6 +16,9 @@ class ElectricalParams:
     Consider_electrical_losses: int = 0     # 0: do not consider, 1: consider
     max_p_sub1: float = 30.5e6       # W
     max_p_sub2: float = 30.0e6       # W
+    batt_cap: float = 0.75e06  # Battery capacity (0.75 MWh), Wierden example
+    max_discharge: float = 2.0e6  # Maximum discharging power (2 MW), Wierden example
+    max_charge: float = 0.7e6  # Maximum charging power (0.7 MW), Wierden example
 @dataclass
 class TrainParams:
     m: float = 391000               # kg
@@ -27,7 +30,7 @@ class TrainParams:
     max_v: float = 44.444           # m/s
     max_acc: float = 0.768          # m/s^2
     max_braking: float = 0.5        # m/s^2
-    max_p: float = 359900 * 120       # W
+    max_p: float = 359900 * 6       # W
     mu_curve: float = 0.001         # Curve resistance coefficient
 @dataclass
 class SimulationParams:
@@ -131,11 +134,13 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
     model.Pm = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, train.max_p))
     model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
     model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
+    model.Pb = pyomo.Var(D, domain=pyomo.Reals, bounds=(-electrical.max_charge, electrical.max_discharge))  # Battery power (W), can be negative for charging
+    model.SoC = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, electrical.batt_cap))
     model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
     model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(electrical.cat_voltage_bound[0], electrical.cat_voltage_bound[1])) # Voltage (according to ProRail safety standards)
 
     '''If the objective function is changed, the plot functions and calculate_energy_consumption function must be updated accordingly.'''
-    model.of = pyomo.Objective(expr=sum((model.Pm[d]/train.eta - train.braking_eff*model.Pn[d])*(2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
+    model.of = pyomo.Objective(expr=sum((model.Pm[d]/train.eta - train.braking_eff*model.Pn[d] + model.Pb[d])*(2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
     
     # Constraints
     model.cons = pyomo.ConstraintList()
@@ -145,6 +150,9 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
     model.Pn[0].fix(0)
     model.v[final_distance].fix(0)
     model.t[final_distance].fix(simulation.time_remaining)
+    model.V[0].fix(electrical.V0)
+    model.Pb[0].fix(0)
+    model.SoC[0].fix(electrical.batt_cap)  # Assuming initial state of charge is full
     
     for d in list(D)[1:]:
         prev_d = d - simulation.delta_s
@@ -152,7 +160,7 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
         model.cons.add(model.v[d] <= data[d]['speed_limit'])  # Track speed limit constraint
         model.cons.add((model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_acc)
         model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_braking)
-        model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d])
+        model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d] + model.Pb[d])
         model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
         model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))
         model.cons.add(model.P[d] == model.V[d] * ((electrical.V0 - model.V[d]) / (electrical.rho * d + 1e-9) + (electrical.V0 - model.V[d]) / (electrical.rho * (simulation.distance_remaining - d) + 1e-9)))  # Electrical power consumption
@@ -169,6 +177,9 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
                 train.m * 9.807 * data[d]['grade'] +
                 train.m * (model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]))
             ))**2)
+        
+        # Assuming battery efficiency is 100% for simplicity, can be adjusted later
+        model.cons.add(model.SoC[d] == model.SoC[prev_d] - model.Pb[d] * (2 * simulation.delta_s / (model.v[d] + model.v[prev_d] + 1e-6)) / 3600)  # Wh, assuming Pb in W
         
     solver = pyomo.SolverFactory('ipopt')
     results = solver.solve(model, tee=False)
@@ -324,39 +335,50 @@ def plot_substation_powers(model, data, simulation: SimulationParams):
     distances = []
     P_sub1_values = []
     P_sub2_values = []
+    Pb_values = []
+    SoC_values = []
 
     for d in data.keys():
         distances.append(d / 1000)  # Convert distance to km
         pm = model.Pm[d]()
         pn = model.Pn[d]()
+        Pb = model.Pb[d]() / 1e6  # Convert W to MW
+        SoC = model.SoC[d]() / 1e3  # Convert Wh to kWh for easier reading
         P = pm - train.braking_eff * pn
         P_sub1 = (simulation.distance_remaining - d) * P / simulation.distance_remaining
         P_sub2 = d * P / simulation.distance_remaining
-        P_sub1_values.append(P_sub1 / 1000000)  # Convert W to MW
-        P_sub2_values.append(P_sub2 / 1000000)  # Convert W to MW
+        P_sub1_values.append(P_sub1 / 1e6)  # Convert W to MW
+        P_sub2_values.append(P_sub2 / 1e6)  # Convert W to MW
+        Pb_values.append(Pb)
+        SoC_values.append(SoC)
 
     fig, ax1 = plt.subplots(figsize=(12, 6))
     ax1.plot(distances, P_sub1_values, 'b-', linewidth=2, label='Substation 1 Power')
     ax1.plot(distances, P_sub2_values, 'r-', linewidth=2, label='Substation 2 Power')
-    ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
-    ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
+    ax1.plot(distances, Pb_values, 'g-', linewidth=2, label='Battery Power (Pb)')
+    ax1.axhline(0, color='black', linewidth=1, linestyle='-')
+    ax1.axvline(0, color='black', linewidth=2)
     ax1.set_xlim(left=0)
     ax1.set_xlabel('Distance (km)', fontsize=16, fontweight='bold')
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
-
-    # Add more grid lines for y-axis only
+    y_major_locator = MultipleLocator(0.25)
+    ax1.yaxis.set_major_locator(y_major_locator)
     ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
     ax1.xaxis.grid(True)
 
-    # Add more ticks for y axis
-    y_major_locator = MultipleLocator(0.25)  # Major ticks every 0.2 MW
-    # y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
-    ax1.yaxis.set_major_locator(y_major_locator)
-    # ax1.yaxis.set_minor_locator(y_minor_locator)
+    # Add SoC on a secondary y-axis
+    ax2 = ax1.twinx()
+    ax2.plot(distances, SoC_values, 'm--', linewidth=2, label='Battery SoC (kWh)')
+    ax2.set_ylabel('Battery SoC (kWh)', color='m', fontsize=16, fontweight='bold')
+    ax2.yaxis.grid(False)
+
+    # Combine legends from both axes
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=14)
 
     minutes, seconds = int(simulation.time_remaining // 60), int(simulation.time_remaining % 60)
-    plt.title(f'Substation Power Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
-    ax1.legend(loc='upper right', fontsize=14)
+    plt.title(f'Substation, Battery Power, and SoC Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec)', fontsize=18, fontweight='bold')
     
 def plot_voltage_profile(model, data, simulation: SimulationParams):
     distances, voltages = [], []
