@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import sys
 import random
 import time
+import os
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 import csv
 from dataclasses import dataclass
@@ -14,19 +15,20 @@ class ElectricalParams:
     V0: int = 1800        # Operational Voltage (V)
     cat_voltage_bound: list = (1200, 1925)  # [min, max] catenary voltage
     Consider_electrical_losses: int = 0     # 0: do not consider, 1: consider
-    max_p_sub1: float = 30.5e6       # W
-    max_p_sub2: float = 30.0e6       # W
+    max_p_sub1: float = 3.0e6       # W
+    max_p_sub2: float = 3.0e6       # W
     batt_cap: float = 0.75e06  # Battery capacity (0.75 MWh), Wierden example
-    max_discharge: float = 2.0e6  # Maximum discharging power (2 MW), Wierden example
-    max_charge: float = 0.7e6  # Maximum charging power (0.7 MW), Wierden example
+    batt_max_discharge: float = 2.0e6  # Maximum discharging power (2 MW), Wierden example
+    batt_max_charge: float = 0.7e6  # Maximum charging power (0.7 MW), Wierden example
+    batt_initial_soc: float = 0.5  # Initial state of charge (50% of battery capacity)
 @dataclass
 class TrainParams:
     m: float = 391000               # kg
     A: float = 3.02 * 4.67          # m^2
     C: float = 0.002                # Rolling resistance coefficient
     C_d: float = 0.8                # Drag coefficient
-    eta: float = 0.87               # Propulsion efficiency
-    braking_eff: float = 0.89       # Regenerative braking efficiency
+    eta: float = 0.9               # Propulsion efficiency
+    braking_eff: float = 0.9       # Regenerative braking efficiency
     max_v: float = 44.444           # m/s
     max_acc: float = 0.768          # m/s^2
     max_braking: float = 0.5        # m/s^2
@@ -62,12 +64,11 @@ def main():
 
     if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
         plt.rcParams.update({'font.size': 15, 'axes.titlesize': 18, 'axes.labelsize': 16, 'xtick.labelsize': 14, 'ytick.labelsize': 14, 'legend.fontsize': 14, 'figure.titlesize': 20, 'font.family': 'serif', 'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']})
-        print(f"\nTotal Energy Consumption: {calculate_energy_consumption(model, data, simulation):.3f} kWh")
+        train_net_energy_consumption, battery_net_energy_consumption = calculate_energy_consumption(model, data, simulation, print_results=True)
         plot_substation_powers(model, data, simulation)
         plot_Pm_and_Pn_profile(model, data, simulation, speed_limits=speed_limits_dict)
-        # plot_Pm_and_Pn_profile_time(model, data, simulation, speed_limits=speed_limits_dict)
         plot_voltage_profile(model, data, simulation)
-        save_power_velocity_acceleration_to_csv("Train_results.csv", model, data, simulation, calculate_energy_consumption(model, data, simulation))
+        save_power_velocity_acceleration_to_csv("Train_results.csv", model, data, simulation, train_net_energy_consumption)
         plt.show()
     else:
         print("No results to save or plot due to solver termination condition.")
@@ -133,14 +134,14 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
     # State Variables
     model.Pm = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, train.max_p))
     model.Pn = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
-    model.P = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
-    model.Pb = pyomo.Var(D, domain=pyomo.Reals, bounds=(-electrical.max_charge, electrical.max_discharge))  # Battery power (W), can be negative for charging
+    model.Pg = pyomo.Var(D, domain=pyomo.Reals, initialize=lambda model0, d: P_opt[d])
+    model.Pb = pyomo.Var(D, domain=pyomo.Reals, bounds=(-electrical.batt_max_charge, electrical.batt_max_discharge))  # Battery power (W), can be negative for charging
     model.SoC = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(0, electrical.batt_cap))
-    model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) # Distance 
+    model.t = pyomo.Var(D, domain=pyomo.NonNegativeReals) 
     model.V = pyomo.Var(D, domain=pyomo.NonNegativeReals, bounds=(electrical.cat_voltage_bound[0], electrical.cat_voltage_bound[1])) # Voltage (according to ProRail safety standards)
 
-    '''If the objective function is changed, the plot functions and calculate_energy_consumption function must be updated accordingly.'''
-    model.of = pyomo.Objective(expr=sum((model.Pm[d]/train.eta - train.braking_eff*model.Pn[d] + model.Pb[d])*(2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s])) for d in list(D)[1:]), sense=pyomo.minimize)
+    model.of = pyomo.Objective(expr=sum(model.Pg[d] + model.Pb[d]
+    for d in list(D)[1:]),sense=pyomo.minimize)
     
     # Constraints
     model.cons = pyomo.ConstraintList()
@@ -152,36 +153,33 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
     model.t[final_distance].fix(simulation.time_remaining)
     model.V[0].fix(electrical.V0)
     model.Pb[0].fix(0)
-    model.SoC[0].fix(electrical.batt_cap)  # Assuming initial state of charge is full
+    model.Pg[0].fix(0)
+    model.SoC[0].fix(electrical.batt_cap*electrical.batt_initial_soc)  # Assuming initial state of charge is full
     
     for d in list(D)[1:]:
-        prev_d = d - simulation.delta_s
-        model.cons.add(model.t[d] == model.t[prev_d] + 2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6))
+        model.cons.add(model.t[d] == model.t[d - simulation.delta_s] + 2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]+1e-6))
         model.cons.add(model.v[d] <= data[d]['speed_limit'])  # Track speed limit constraint
-        model.cons.add((model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_acc)
-        model.cons.add(-(model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6)) <= train.max_braking)
-        model.cons.add(model.P[d] == model.Pm[d] - model.Pn[d] + model.Pb[d])
-        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
-        model.cons.add(abs(model.P[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))
-        model.cons.add(model.P[d] == model.V[d] * ((electrical.V0 - model.V[d]) / (electrical.rho * d + 1e-9) + (electrical.V0 - model.V[d]) / (electrical.rho * (simulation.distance_remaining - d) + 1e-9)))  # Electrical power consumption
-        model.cons.add(
-            model.P[d] == model.v[d] * ( 
-                0.5 * 1.225 * train.C_d * train.A * (model.v[d] + simulation.WindSpeed)**2 + # aerodynamic drag
+        model.cons.add((model.v[d] - model.v[d - simulation.delta_s]) / (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]+1e-6)) <= train.max_acc)
+        model.cons.add(-(model.v[d] - model.v[d - simulation.delta_s]) / (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]+1e-6)) <= train.max_braking)
+        model.cons.add(model.Pg[d] + model.Pb[d] == model.Pm[d]/train.eta - model.Pn[d]*train.braking_eff)
+        model.cons.add(model.Pm[d] - model.Pn[d] == 
+                model.v[d] * (0.5 * 1.225 * train.C_d * train.A * (model.v[d] + simulation.WindSpeed)**2 + # aerodynamic drag
                 train.C * train.m * 9.807 + # rolling resistance
                 train.m * 9.807 * data[d]['grade'] + # track grade
-                train.m * (model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]+1e-6))) # acceleration
+                train.m * (model.v[d] - model.v[d - simulation.delta_s]) / (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]+1e-6))) # acceleration
             + electrical.rho * simulation.distance_remaining * electrical.Consider_electrical_losses * #electrical losses simplification (can be switched off)
             (model.v[d] / train.eta  / electrical.V0 * (
                 0.5 * 1.225 * train.C_d * train.A * (model.v[d] + simulation.WindSpeed)**2 +
                 train.C * train.m * 9.807 +
                 train.m * 9.807 * data[d]['grade'] +
-                train.m * (model.v[d] - model.v[prev_d]) / (2 * simulation.delta_s / (model.v[d] + model.v[prev_d]))
+                train.m * (model.v[d] - model.v[d - simulation.delta_s]) / (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]))
             ))**2)
-        
-        # Assuming battery efficiency is 100% for simplicity, can be adjusted later
-        model.cons.add(model.SoC[d] == model.SoC[prev_d] - model.Pb[d] * (2 * simulation.delta_s / (model.v[d] + model.v[prev_d] + 1e-6)) / 3600)  # Wh, assuming Pb in W
-        
+        model.cons.add(model.SoC[d] == model.SoC[d - simulation.delta_s] - model.Pb[d] * (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s] + 1e-6)) / 3600)  # Wh, assuming Pb in W
+        model.cons.add(model.Pg[d] + model.Pb[d] == model.V[d] * ((electrical.V0 - model.V[d]) / (electrical.rho * d + 1e-9) + (electrical.V0 - model.V[d]) / (electrical.rho * (simulation.distance_remaining - d) + 1e-9)))  # Electrical power consumption
+        # model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
+        # model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))
     solver = pyomo.SolverFactory('ipopt')
+    solver.options['tol'] = 1e-8
     results = solver.solve(model, tee=False)
     return model, results.solver.termination_condition  # Add return statement
 
@@ -254,56 +252,46 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
     minutes, seconds = int(simulation.time_remaining // 60), int(simulation.time_remaining % 60)
-    total_energy = calculate_energy_consumption(model, data, simulation)
+    total_energy, _ = calculate_energy_consumption(model, data, simulation, print_results=False)
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
     plt.grid(True, which='both', linestyle='--', alpha=0.5)   
 
 def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limits=None):
-    # Initialize with zero at the first point
-    distances, Pm_values, Pn_values, velocities, accelerations = [0], [0], [0], [0], [0]
+    distances, power_values, Pg_values, Pb_values, velocities, accelerations = [0], [0], [0], [0], [0], [0]
 
-    for idx, d in enumerate(data.keys()):
-        if idx == 0 or d == 0:
-            continue  # Already initialized first point
-        v = model.v[d]()
-        pm = model.Pm[d]() / 1000000  # MW
-        pn = model.Pn[d]() / 1000000  # MW
-        vel_kmh = v * 3.6
-        distances.append(d/1000)
-        Pm_values.append(pm)
-        Pn_values.append(pn)
-        velocities.append(vel_kmh)
-        prev_d = d - simulation.delta_s
-        a = (v - model.v[prev_d]()) / (2 * simulation.delta_s / (v + model.v[prev_d]()))
-        accelerations.append(a)
+    d_keys = list(data.keys())
+    for idx in range(1, len(d_keys)):
+        d, prev_d = d_keys[idx], d_keys[idx - 1]
+        distances.append(d / 1000)
+        power_values.append(1e-6*(model.Pm[d]() - model.Pn[d]()))
+        Pg_values.append(1e-6*model.Pg[d]()) #power from other sources (grid or substation)
+        Pb_values.append(1e-6*model.Pb[d]())
+        velocities.append(model.v[d]() * 3.6)
+        accelerations.append((model.v[d]() - model.v[prev_d]()) / (2 * simulation.delta_s / (model.v[d]() + model.v[prev_d]() + 1e-6)))
 
-    # Create the plot with two y-axes (power and velocity)
     fig, ax1 = plt.subplots(figsize=(12, 6))
-
-    # Plot power on primary y-axis
-    ax1.plot(distances, [pm/train.eta - train.braking_eff*pn for pm, pn in zip(Pm_values, Pn_values)], 'b-', linewidth=2, label='Power (P)')
-    ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
-    ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
+    ax1.plot(distances, power_values, 'b-', linewidth=2, label='Train Power')
+    ax1.plot(distances, Pb_values, 'g-', linewidth=2, label='Battery Power')
+    ax1.plot(distances, Pg_values, 'r-', linewidth=2, label='Grid Power')
+    ax1.axhline(0, color='black', linewidth=1, linestyle='-')
+    ax1.axvline(0, color='black', linewidth=2)
     ax1.set_xlim(left=0)
     ax1.set_xlabel('Distance (km)', fontsize=16, fontweight='bold')
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
-
-    # Add more grid lines for y-axis only
+    y_major_locator = MultipleLocator(0.25)
+    ax1.yaxis.set_major_locator(y_major_locator)
     ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
     ax1.xaxis.grid(True, which='major', linestyle='--', alpha=0.5)
 
-    # Add more ticks for y axis
-    y_major_locator = MultipleLocator(0.25)  # Major ticks every 0.25 MW
-    # y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
-    ax1.yaxis.set_major_locator(y_major_locator)
-    # ax1.yaxis.set_minor_locator(y_minor_locator)
-
-    # Create second y-axis for velocity (move from third to second axis)
     ax2 = ax1.twinx()
     ax2.plot(distances, velocities, 'orange', linewidth=2, label='Velocity')
     ax2.set_ylabel('Velocity (km/h)', color='orange', fontsize=16, fontweight='bold')
+    ax2.yaxis.set_label_position('right')
+    ax2.yaxis.tick_right()
+    ax1.yaxis.set_label_position('left')
+    ax1.yaxis.tick_left()
 
     # Overlay speed limit profile from CSV if provided
     if speed_limits is not None:
@@ -316,7 +304,6 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
             d_end = interval_ends[i]
             plot_distances.append(d_end / 1000)
             plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
-        # MRSP in a dark yellow color
         ax2.step(plot_distances, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='MRSP')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
@@ -325,32 +312,22 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
 
     minutes = int(simulation.time_remaining // 60)
     seconds = int(simulation.time_remaining % 60)
-    total_energy = calculate_energy_consumption(model, data, simulation)
+    total_energy, _ = calculate_energy_consumption(model, data, simulation, print_results=False)
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
     # plt.grid(True, which='both', linestyle='--', alpha=0.5)
     
 def plot_substation_powers(model, data, simulation: SimulationParams):
-    distances = []
-    P_sub1_values = []
-    P_sub2_values = []
-    Pb_values = []
-    SoC_values = []
-
-    for d in data.keys():
-        distances.append(d / 1000)  # Convert distance to km
-        pm = model.Pm[d]()
-        pn = model.Pn[d]()
-        Pb = model.Pb[d]() / 1e6  # Convert W to MW
-        SoC = model.SoC[d]() / 1e3  # Convert Wh to kWh for easier reading
-        P = pm - train.braking_eff * pn
-        P_sub1 = (simulation.distance_remaining - d) * P / simulation.distance_remaining
-        P_sub2 = d * P / simulation.distance_remaining
-        P_sub1_values.append(P_sub1 / 1e6)  # Convert W to MW
-        P_sub2_values.append(P_sub2 / 1e6)  # Convert W to MW
-        Pb_values.append(Pb)
-        SoC_values.append(SoC)
+    distances, P_sub1_values, P_sub2_values, Pb_values, SoC_values = [], [], [], [], []
+    d_keys = list(data.keys())
+    for idx in range(1, len(d_keys)):
+        d = d_keys[idx]
+        distances.append(d / 1000)
+        P_sub1_values.append((simulation.distance_remaining - d) * model.Pg[d]() * 1e-6 / simulation.distance_remaining) 
+        P_sub2_values.append(d * model.Pg[d]() * 1e-6 / simulation.distance_remaining)
+        Pb_values.append(model.Pb[d]() / 1e6)
+        SoC_values.append(model.SoC[d]() / 1e3)
 
     fig, ax1 = plt.subplots(figsize=(12, 6))
     ax1.plot(distances, P_sub1_values, 'b-', linewidth=2, label='Substation 1 Power')
@@ -430,26 +407,37 @@ def plot_gradients_vs_distance(data, simulation: SimulationParams):
     # Add horizontal and vertical gridlines
     plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
-def calculate_energy_consumption(model, data, simulation: SimulationParams):
-    """Calculates total energy consumption exactly as in the objective function:
-    sum of (Pm - Pn * braking_eff) * delta_t for each segment, in kWh."""
-    total_energy = 0  # kWh
+def calculate_energy_consumption(model, data, simulation: SimulationParams, print_results=True):
+    Train_energy_consumption, battery_net_energy_consumption, battery_to_train_energy, grid_to_train_energy, grid_net_energy = 0, 0, 0, 0, 0
+    
     for d in list(data.keys())[1:]:
         prev_d = d - simulation.delta_s
-        # Average delta_t for the segment
-        v1 = model.v[d]()
-        v0 = model.v[prev_d]()
-        if v1 + v0 > 0:
-            delta_t = 2 * simulation.delta_s / (v1 + v0)
+        if model.v[d]() + model.v[prev_d]() > 0:
+            delta_t = 2 * simulation.delta_s / (model.v[d]() + model.v[prev_d]())
         else:
             delta_t = 0
-        # Average Pm and Pn for the segment
+        
         Pm_avg = (model.Pm[d]() + model.Pm[prev_d]()) / 2
         Pn_avg = (model.Pn[d]() + model.Pn[prev_d]()) / 2
-        # Energy for this segment (W * s = J), convert to kWh
-        segment_energy = (Pm_avg/train.eta - Pn_avg * train.braking_eff) * delta_t / 3.6e6
-        total_energy += segment_energy
-    return total_energy
+        Pb_avg = (model.Pb[d]() + model.Pb[prev_d]()) / 2
+        Pg_avg = (model.Pg[d]() + model.Pg[prev_d]()) / 2
+        
+        Train_energy_consumption += (Pm_avg - Pn_avg) * delta_t / 3.6e6        
+        
+        grid_net_energy += Pg_avg * delta_t / 3.6e6
+        if Pg_avg < 0:
+            grid_to_train_energy += Pg_avg * delta_t / 3.6e6
+
+        battery_net_energy_consumption += Pb_avg * delta_t / 3.6e6
+        if Pb_avg > 0:
+            battery_to_train_energy += Pb_avg * delta_t / 3.6e6
+    if print_results:
+        print(f"Mechanical energy consumption: {Train_energy_consumption:.3f} kWh")
+        print(f"Battery net charging/discharging: {battery_net_energy_consumption:.3f} kWh  (positive means battery is discharged more than charged)")
+        print(f"Battery energy provided to train: {battery_to_train_energy:.3f} kWh ({battery_to_train_energy/Train_energy_consumption*100:.2f}% of total)")
+        print(f"Grid energy provided to train: {grid_net_energy:.3f} kWh")
+    
+    return Train_energy_consumption, battery_to_train_energy
 
 def process_speed_limits(simulation: SimulationParams):
     """
@@ -483,7 +471,8 @@ def process_speed_limits(simulation: SimulationParams):
     start_distance = distances[0]
     end_distance = distances[-1]
     simulation.distance_remaining = end_distance - start_distance
-    print(f"Start distance: {start_distance} m, End distance: {end_distance} m")
+    filename = os.path.basename(simulation.speed_limit_csv_path)
+    print(f"Distance: {int(end_distance-start_distance)} m, (Start: {int(start_distance)} m, End: {int(end_distance)} m), Route: {filename[:-4][-7:]}")
 
     # Build speed limits dictionary for plotting
     speed_limits_dict = {}
@@ -573,7 +562,7 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
             sim_scenario.distance_remaining, sim_scenario.delta_s, data, train, electrical, sim_scenario
         )
         if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
-            total_energy = calculate_energy_consumption(model, data, simulation)
+            total_energy, _ = calculate_energy_consumption(model, data, simulation, print_results=False)
             scenario_results.append({
                 'max_p_sub1': max_p_sub1_val,
                 'model': model,

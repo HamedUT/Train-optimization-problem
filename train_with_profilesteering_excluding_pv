@@ -1,0 +1,89 @@
+import sys
+sys.path.append('/profilesteering')
+
+import time
+import matplotlib.pyplot as plt
+import numpy as np
+import pyomo.environ as pyomo
+from Train import main as train_main
+from Train import Main, process_speed_limits, collecting_gradients
+from Train import electrical, train, simulation
+from train_device import TrainDevice
+from train_battery import TrainBattery
+from profilesteering.profilesteering import ProfileSteering
+
+def run_integrated_optimization():
+    """Run the integrated train optimization with profile steering"""
+    # Initialize the train model first
+    print("Initializing train model...")
+    speed_limits_dict, speed_limit_array, simulation.distance_remaining = process_speed_limits(simulation)
+    gradients = collecting_gradients(simulation, mode="const", max_gradient=0.0)
+    
+    # Build data dictionary
+    data = {0: {'grade': gradients[0], 'speed_limit': speed_limit_array[0]}}
+    for i in range(1, int(simulation.distance_remaining / simulation.delta_s) + 1):
+        data[i * simulation.delta_s] = {
+            'grade': gradients[min(i, len(gradients) - 1)],
+            'speed_limit': speed_limit_array[min(i, len(speed_limit_array) - 1)]
+        }
+    
+    # First run: Get initial solution from train model
+    print("Running initial train optimization...")
+    model, termination_condition = Main(data, train, electrical, simulation)
+    
+    if termination_condition not in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
+        print("Initial train optimization failed. Exiting.")
+        return
+    
+    # Extract total simulation time for profile creation
+    final_distance = list(data.keys())[-1]
+    total_time = model.t[final_distance]()
+    print(f"Train simulation complete. Total time: {total_time:.2f} seconds")
+    
+    # Create time-based discretization for profile steering
+    time_intervals = 100  # Adjust as needed
+    
+    # Initialize device instances
+    train_device = TrainDevice(model, train, electrical, simulation)
+    train_device.set_data(data)
+    
+    train_battery = TrainBattery(model, train, electrical)
+    train_battery.set_data(data)
+    
+    # Initialize profile steering
+    devices = [train_device, train_battery]
+    ps = ProfileSteering(devices)
+    
+    # Create a desired profile (flat, minimal energy consumption)
+    desired_profile = [0] * time_intervals
+    
+    # Initialize profiles
+    power_profile = ps.init(desired_profile)
+    
+    # Run the profile steering algorithm
+    print("Running Profile Steering optimization...")
+    e_min = 0.001  # Minimum improvement threshold
+    max_iters = 10  # Maximum iterations
+    
+    final_profile = ps.iterative(e_min, max_iters)
+    
+    # Visualize results
+    plot_profiles(desired_profile, power_profile, final_profile)
+    
+    print("Optimization complete.")
+
+def plot_profiles(desired, initial, final):
+    """Plot the desired, initial and final profiles"""
+    plt.figure(figsize=(12, 6))
+    plt.plot(desired, 'g-', label='Desired Profile', linewidth=2)
+    plt.plot(initial, 'b-', label='Initial Profile', linewidth=2)
+    plt.plot(final, 'r-', label='Optimized Profile', linewidth=2)
+    plt.xlabel('Time Interval')
+    plt.ylabel('Power (W)')
+    plt.title('Profile Steering Optimization Results')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if __name__ == "__main__":
+    run_integrated_optimization()
