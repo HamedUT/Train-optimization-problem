@@ -1,0 +1,4 @@
+Order;Distance;Speed;Origen;Timingpoint;Brakingstatus;Action
+1;431;130;None;Rtd;None;Stop
+2;4383;130;Sign;;None;None
+3;5431;0;None;Rta;None;Stop
