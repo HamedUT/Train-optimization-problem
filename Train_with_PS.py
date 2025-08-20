@@ -77,10 +77,41 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import interp1d
 import contextlib
+import hashlib
+from functools import lru_cache
 import os
 sys.path.append(r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem")
 from Train import Main, process_speed_limits, collecting_gradients, ElectricalParams, TrainParams, SimulationParams
 
+# Global cache for train profiles
+_train_profile_cache = {}
+
+def get_train_profiles_cached(delta_s, total_time, speed_limit_file, interpolation_step, max_power):
+    """
+    Cached version of get_train_profiles that avoids redundant computations
+    between scenarios with identical train configurations.
+    """
+    # Create a cache key based on the input parameters
+    cache_key = (delta_s, total_time, speed_limit_file, interpolation_step, max_power)
+    
+    # Check if we've already computed this train profile
+    if cache_key in _train_profile_cache:
+        print(f"[CACHED] Using cached profile for {speed_limit_file} (delta_s={delta_s}, time={total_time}s, max_p={max_power/1e6:.2f}MW)")
+        return _train_profile_cache[cache_key]
+    
+    # If not in cache, compute it
+    print(f"[NEW] Computing new profile for {speed_limit_file} (delta_s={delta_s}, time={total_time}s, max_p={max_power/1e6:.2f}MW)")
+    result = get_train_profiles(delta_s, total_time, speed_limit_file, interpolation_step, max_power)
+    
+    # Store in cache for future use
+    _train_profile_cache[cache_key] = result
+    return result
+def clear_train_profile_cache():
+    """Clear the train profile cache to free memory"""
+    global _train_profile_cache
+    cache_size = len(_train_profile_cache)
+    _train_profile_cache = {}
+    print(f"Cleared train profile cache ({cache_size} entries)")
 def get_train_profiles(delta_s, total_time, speed_limit_file, interpolation_step, max_power):
 
     # Initialize train parameters
@@ -200,16 +231,16 @@ def setup_profile_steering_environment(
         time_end_horizon = max(end_times)
 
     # Get train profiles for each train
-    train_profiles = []
+    train_profiles = []    
     
     for i in range(num_trains):
-        hub_power, _, _, _, _ = get_train_profiles(
+        hub_power, _, _, _, _ = get_train_profiles_cached(
             delta_s=delta_s_list[i],
             total_time=total_time_list[i],
             speed_limit_file=speed_limit_file_list[i],
             interpolation_step=interpolation_step,
             max_power=train_max_p_list[i])
-        train_profiles.append(hub_power.tolist())  
+        train_profiles.append(hub_power.tolist())
     
     # Define extended time horizon
     extended_times = np.arange(time_start_horizon, time_end_horizon + 1, 1)
@@ -239,8 +270,8 @@ def plot_energy_profiles(extended_times, devices, battery, pv, soc):
     plt.plot(extended_times, battery.profile, label="Battery Profile", color='blue', linestyle='--')
     ax1 = plt.gca()
     ax2 = ax1.twinx()
-    ax2.plot(extended_times, soc[:-1], label="Battery SoC", color='red', linestyle='-')
-    ax2.set_ylabel("State of Charge (SoC)", color='red')
+    ax2.plot(extended_times, [s * 100 for s in soc[:-1]], label="Battery SoC (%)", color='red', linestyle='-')
+    ax2.set_ylabel("State of Charge (%)", color='red')
     ax2.tick_params(axis='y', labelcolor='red')
     plt.title("Individual and Combined Profiles with Battery SoC")
     ax1.set_xlabel("Time (seconds)")
@@ -251,12 +282,34 @@ def plot_energy_profiles(extended_times, devices, battery, pv, soc):
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     plt.tight_layout()
 def plot_ps_vs_original(extended_times, final_profile, battery, pv):
+    # Calculate total energy for each profile (MWh)
+    time_step = extended_times[1] - extended_times[0]  # Usually 1 second
+    
+    # Calculate total energy for each profile (MWh)
+    hub_with_battery_pv_energy = sum(final_profile) * time_step / 3600
+    hub_without_battery_pv = [f - b - p for f, b, p in zip(final_profile, battery.profile, pv.profile)]
+    hub_without_battery = [f - b for f, b in zip(final_profile, battery.profile)]
+    hub_without_battery_pv_energy = sum(hub_without_battery_pv) * time_step / 3600
+    hub_without_battery_energy = sum(hub_without_battery) * time_step / 3600
+    pv_energy = sum(pv.profile) * time_step / 3600
+    battery_energy = sum(battery.profile) * time_step / 3600
+    
     plt.figure(figsize=(12, 6))
-    plt.plot(extended_times, final_profile, label="Hub with Battery and PV", color='green')
-    plt.plot(extended_times, [f - b - p for f, b, p in zip(final_profile, battery.profile, pv.profile)], 
-             label="Hub w/o Battery and PV", color='red')
-    plt.plot(extended_times, pv.profile, label="PV Profile", color='grey', linestyle='-', alpha=0.8)
-    plt.plot(extended_times, battery.profile, label="Battery Profile", color='grey', linestyle='--', alpha=0.8)
+    plt.plot(extended_times, final_profile, 
+             label=f"Hub with Battery and PV (Energy: {hub_with_battery_pv_energy:.2f} MWh)", 
+             color='green')
+    plt.plot(extended_times, hub_without_battery, 
+             label=f"Hub w/o Battery, with PV (Energy: {hub_without_battery_energy:.2f} MWh)", 
+             color='orange') 
+    plt.plot(extended_times, hub_without_battery_pv, 
+             label=f"Hub w/o Battery and PV (Energy: {hub_without_battery_pv_energy:.2f} MWh)", 
+             color='red')
+    plt.plot(extended_times, pv.profile, 
+             label=f"PV Profile (Energy: {pv_energy:.2f} MWh)", 
+             color='grey', linestyle='-', alpha=0.8)
+    plt.plot(extended_times, battery.profile, 
+             label=f"Battery Profile (Energy: {battery_energy:.2f} MWh)", 
+             color='grey', linestyle='--', alpha=0.8)
     plt.title("Hub Power Profile Optimization with Profile Steering")
     plt.xlabel("Time (seconds)")
     plt.ylabel("Power (MW)")
@@ -291,8 +344,9 @@ def run_profile_steering(
     # Assert that journey time extension is less than the minimum flexibility    
     min_departure_flex = min(departure_flexibility) * 100  # Convert to percentage
     min_arrival_flex = min(arrival_flexibility) * 100  # Convert to percentage
-    assert journey_time_extension_for_shaving <= min(min_departure_flex, min_arrival_flex), \
-        f"Journey time extension ({journey_time_extension_for_shaving}%) exceeds available flexibility (min: {min(min_departure_flex, min_arrival_flex):.2f}%)"
+    if max_peak_shaving_iterations is not None:
+            assert journey_time_extension_for_shaving <= min(min_departure_flex, min_arrival_flex), \
+                f"Journey time extension ({journey_time_extension_for_shaving}%) exceeds available flexibility (min: {min(min_departure_flex, min_arrival_flex):.2f}%)"
     
     # Calculate start_times and end_times if not provided directly        
     start_times = [int(t * 60) - int(flex * total) 
@@ -325,11 +379,24 @@ def run_profile_steering(
     battery = devices[0]
     pv = devices[1]
 
-    if detailed_output_per_scenario:
+    if detailed_output_per_scenario is True:
         soc = battery.calculate_soc(times=extended_times, return_history=True)
         plot_energy_profiles(extended_times, devices, battery, pv, soc)
         plot_ps_vs_original(extended_times, final_profile, battery, pv)
         plt.show()
+    else:
+        soc = battery.calculate_soc(times=extended_times, return_history=True)
+        plot_energy_profiles(extended_times, devices, battery, pv, soc)
+        plt.savefig(f"profile_steering_energy_profiles_{getattr(run_profile_steering, 'plot_counter', 1)}.png")
+        plt.close()
+        plot_ps_vs_original(extended_times, final_profile, battery, pv)
+        plt.savefig(f"profile_steering_ps_vs_original_{getattr(run_profile_steering, 'plot_counter', 1)}.png")
+        plt.close()
+        # Use a counter to generate unique filenames for each scenario
+        if not hasattr(run_profile_steering, "plot_counter"):
+            run_profile_steering.plot_counter = 1
+        run_profile_steering.plot_counter += 1
+
     
     return final_profile, battery.profile, extended_times
 def perform_peak_shaving(
@@ -426,7 +493,7 @@ def perform_peak_shaving(
             
             for i, device in enumerate(devices[2:], 2):  # Skip battery and PV devices
                 train_idx = i-2
-                if device.startTime <= peak_time <= device.endTime:
+                if device.startTime <= peak_time <= device.endTime and device.profile[peak_time] > 0.1:  # Only consider trains with significant power
                     active_trains.append((train_idx, device, train_max_p_list[train_idx]))
             
             if not active_trains:
@@ -534,6 +601,7 @@ def perform_peak_shaving(
                             print(f"Reduced flexibilities: departure {original_dep_flex:.3f} → {departure_flexibility[selected_train_idx]:.3f}, " +
                                 f"arrival {original_arr_flex:.3f} → {arrival_flexibility[selected_train_idx]:.3f}")
                             
+
                     except RuntimeError as e:
                         print(f"Train {selected_train_idx+1} journey still infeasible after time extension: {e}")
                         # Restore original values and try another train
@@ -685,23 +753,21 @@ def generate_pv_profile(start_time_hour, duration_seconds, max_capacity_mw,
 ##################################################################################
 #Scenario compare part 
 ##################################################################################
-scenario1 = {
+scenario0 = {
     # Train.py settings
-    'delta_s_list': [100] * 10, # Distance step for each train in meters (delta_s in Train.py)
+    'delta_s_list': [100] * 5, # Distance step for each train in meters (delta_s in Train.py)
     'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Wdn_Nij.csv", 
-        "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Nij_Wdn.csv", 
-        "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Rij_Wdn.csv", "SpeedLimit_Wdn_Alm.csv", 
-        "SpeedLimit_Wdn_Rij.csv"], # Speed limit files for each train
-    'train_max_p_list': [2159400]*10, # Maximum power capability of trains in Watts.
+        "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Alm_Rij.csv"], # Speed limit files for each train
+    'train_max_p_list': [2159400]*5, # Maximum power capability of trains in Watts.
     
     # Converting Train.py outputs from distance to time
     'interpolation_step': 1,
     
     # Timetable settings
-    'total_time_list': [270, 270, 330, 460, 460, 330, 270, 315, 270, 315], # Total journey time for each train in seconds
-    'times': [0, 1, 6, 6, 11, 16, 20, 22, 22, 25], # Scheduled times in minutes (the hashtags in --:##) of an hour
-    'departure_flexibility': [0.03]*10, # margin or flexibility for departure times
-    'arrival_flexibility': [0.03]*10,# margin or flexibility for arrival times
+    'total_time_list': [300, 300, 360, 510, 510], # Total journey time for each train in seconds
+    'times': [2, 4, 6, 6, 8], # Scheduled times in minutes (the hashtags in --:##) of an hour
+    'departure_flexibility': [0.035]*5, # margin or flexibility for departure times
+    'arrival_flexibility': [0.035]*5,# margin or flexibility for arrival times
     
     # Profile steering settings
     'time_start_horizon': 0,
@@ -712,68 +778,25 @@ scenario1 = {
     # PV generation profile
     'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
     'start_time_hour': 12, # Start time of the simulation in hours (0-23)
-    'max_capacity_mw': 5.0, # Maximum capacity of the PV installation in MW
-    'weather_condition': 'rainy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
+    'max_capacity_mw': 2, # Maximum capacity of the PV installation in MW
+    'weather_condition': 'cloudy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
     'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
     'random_seed': 1, # Seed for reproducible randomization, None for random
 
     # Whether to return detailed output data and create plots per scenario
-    'detailed_output_per_scenario': True,
+    'detailed_output_per_scenario': True, # True for showing plots, otherwise no show and saves plots to files
     
     # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
-    'max_peak_shaving_iterations': None, # Maximum iterations for peak shaving, None means no peak shaving avoidance
-    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW
+    'max_peak_shaving_iterations': 2, # Maximum iterations for peak shaving, None means no peak shaving avoidance
+    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW. The limitation for catenary is 6 MW in Netherlands.
     'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
-    'journey_time_extension_for_shaving': 1 # Percentage to extend journey time of the train that triggered peak shaving
+    'journey_time_extension_for_shaving': 0.75 # Percentage to extend journey time of the train that triggered peak shaving
 }
-
-scenario2 = {
-    # Train.py settings
-    'delta_s_list': [100] * 10, # Distance step for each train in meters (delta_s in Train.py)
-    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Wdn_Nij.csv", 
-        "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Nij_Wdn.csv", 
-        "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Rij_Wdn.csv", "SpeedLimit_Wdn_Alm.csv", 
-        "SpeedLimit_Wdn_Rij.csv"], # Speed limit files for each train
-    'train_max_p_list': [2159400]*10, # Maximum power capability of trains in Watts.
-    
-    # Converting Train.py outputs from distance to time
-    'interpolation_step': 1,
-    
-    # Timetable settings
-    'total_time_list': [270, 270, 330, 460, 460, 330, 270, 315, 270, 315], # Total journey time for each train in seconds
-    'times': [0, 1, 6, 6, 11, 16, 20, 22, 22, 25], # Scheduled times in minutes (the hashtags in --:##) of an hour
-    'departure_flexibility': [0.03]*10, # margin or flexibility for departure times
-    'arrival_flexibility': [0.03]*10,# margin or flexibility for arrival times
-    
-    # Profile steering settings
-    'time_start_horizon': 0,
-    'time_end_horizon': None, # None means calculate based on start and end times
-    'e_min': 0.001, # Minimum error for convergence in profile steering
-    'max_iters': 1000, # Maximum iterations for profile steering
-
-    # PV generation profile
-    'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
-    'start_time_hour': 12, # Start time of the simulation in hours (0-23)
-    'max_capacity_mw': 5.0, # Maximum capacity of the PV installation in MW
-    'weather_condition': 'rainy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
-    'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
-    'random_seed': 1, # Seed for reproducible randomization, None for random
-
-    # Whether to return detailed output data and create plots per scenario
-    'detailed_output_per_scenario': True,
-    
-    # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
-    'max_peak_shaving_iterations': 10, # Maximum iterations for peak shaving, None means no peak shaving avoidance
-    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW
-    'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
-    'journey_time_extension_for_shaving': 1 # Percentage to extend journey time of the train that triggered peak shaving
-}
-
 
 if __name__ == "__main__":
     try:
-        compare_scenarios([scenario1,scenario2],
-            ["No peak shaving", "With peak shaving"])
+        compare_scenarios([scenario0],
+            ["0 iteration"])
         
     except AssertionError as e:
         print(f"\n{e}")  # This will only print the assertion message

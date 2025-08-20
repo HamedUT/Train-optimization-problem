@@ -14,7 +14,7 @@ class ElectricalParams:
     rho: float = 0.00003  # Ohms/m
     V0: int = 1800        # Operational Voltage (V)
     cat_voltage_bound: list = (1200, 1925)  # [min, max] catenary voltage
-    Consider_electrical_losses: int = 0     # 0: do not consider, 1: consider (but maybe it is double counting considering the constraint with voltage losses)
+    Consider_electrical_losses: int = 1     # 0: do not consider, 1: consider (but maybe it is double counting considering the constraint with voltage losses)
     max_p_sub1: float = 30.0e6       # W
     max_p_sub2: float = 30.0e6       # W
 @dataclass
@@ -33,7 +33,7 @@ class TrainParams:
 @dataclass
 class SimulationParams:
     total_time: float = 5.5 * 60    # sec
-    delta_s: int = 100              # m
+    delta_s: int =       25        # m
     WindSpeed: float = 0            # m/s
     v_init: float = 0 / 3.6         # m/s
     t_init: float = 0 * 60          # s
@@ -483,18 +483,18 @@ def save_power_velocity_acceleration_to_csv(filepath, model, data, simulation: S
     """
     with open(filepath, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["Distance (km)", "Time (s)", "Velocity (km/h)", "Power (MW)", "Acceleration (m/s²)"])  # Header
+        writer.writerow(["Distance (km)", "Time (s)", "Velocity (km/h)", "Acceleration (m/s²)", "Power (MW)"])  # Header
         for d in data.keys():
             distance_km = d / 1000  # Convert distance to km
             time_s = model.t[d]()   # Time at this distance step
             velocity_kmh = model.v[d]() * 3.6  # Convert velocity to km/h
-            power_mw = (model.Pm[d]()-model.Pn[d]()*train.braking_eff) / 1e6  # Convert power to MW
+            power_mw = (model.Pg[d]()) / 1e6  # Convert power to MW
             if d == 0:
                 acceleration = 0  # No acceleration at the start
             else:
                 prev_d = d - simulation.delta_s
                 acceleration = (model.v[d]() - model.v[prev_d]()) / (2 * simulation.delta_s / (model.v[d]() + model.v[prev_d]()))
-            writer.writerow([f"{distance_km:.3f}", f"{time_s:.2f}", f"{velocity_kmh:.3f}", f"{power_mw:.3f}", f"{acceleration:.3f}"])
+            writer.writerow([f"{distance_km:.3f}", f"{time_s:.2f}", f"{velocity_kmh:.3f}", f"{acceleration:.3f}", f"{power_mw:.3f}"])
         # Append total energy at the end if provided
         if total_energy is not None:
             writer.writerow([])
