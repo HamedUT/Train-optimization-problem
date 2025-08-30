@@ -283,10 +283,8 @@ if __name__ == "__main__":
                                     # Append scenario result to CSV
                                     output_file = "MC_scenarios.csv"
                                     fieldnames = [
-                                        "max_acc", "max_braking", "m", "max_p", "eta", "braking_eff", "total_time","total_distance",
-                                        "distance_final_", "total_time_final_", "total_energy_final",
-                                        "acceleration_time_final", "coasting_time_final", "braking_time_final",
-                                        "braking_speed_final_","eligible"]
+                                        "m", "eta", "braking_eff", "max_acc","max_braking", "max_p", "total_time", "total_distance",
+                                        "total_energy_final", "max_velocity","eligible"]
                                     if closest_difference < 100 and abs(total_time_final_ - total_time) < 10:
                                         eligible = 1 
                                     else: 
@@ -297,21 +295,16 @@ if __name__ == "__main__":
                                         if not file_exists or os.stat(output_file).st_size == 0:
                                             writer.writeheader()
                                         writer.writerow({
-                                            "max_acc": max_acc,
-                                            "max_braking": max_braking,
                                             "m": m,
-                                            "max_p": max_p,
                                             "eta": eta,
                                             "braking_eff": braking_eff,
+                                            "max_acc": max_acc,
+                                            "max_braking": max_braking,
+                                            "max_p": max_p,
                                             "total_time": total_time,
                                             "total_distance": total_distance,
-                                            "distance_final_": distance_final_,
-                                            "total_time_final_": total_time_final_,
                                             "total_energy_final": total_energy_final,
-                                            "acceleration_time_final": acceleration_time_final,
-                                            "coasting_time_final": coasting_time_final,
-                                            "braking_time_final": braking_time_final,
-                                            "braking_speed_final_": braking_speed_final_*3.6,
+                                            "max_velocity": speed_limit_final*3.6,
                                             "eligible": eligible
                                         })
                                     
