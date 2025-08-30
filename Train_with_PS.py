@@ -80,6 +80,7 @@ import contextlib
 import hashlib
 from functools import lru_cache
 import os
+import csv
 sys.path.append(r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem")
 from Train import Main, process_speed_limits, collecting_gradients, ElectricalParams, TrainParams, SimulationParams
 
@@ -281,6 +282,9 @@ def plot_energy_profiles(extended_times, devices, battery, pv, soc):
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     plt.tight_layout()
+    if not os.path.exists("output_plots"):
+        os.makedirs("output_plots")
+    plt.savefig("output_plots/energy_profiles.png", dpi=600, bbox_inches='tight')
 def plot_ps_vs_original(extended_times, final_profile, battery, pv):
     # Calculate total energy for each profile (MWh)
     time_step = extended_times[1] - extended_times[0]  # Usually 1 second
@@ -316,6 +320,9 @@ def plot_ps_vs_original(extended_times, final_profile, battery, pv):
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
+    if not os.path.exists("output_plots"):
+        os.makedirs("output_plots")
+    plt.savefig("output_plots/ps_vs_original.png", dpi=600, bbox_inches='tight')
 def run_profile_steering(
     delta_s_list,
     speed_limit_file_list,
@@ -348,11 +355,22 @@ def run_profile_steering(
             assert journey_time_extension_for_shaving <= min(min_departure_flex, min_arrival_flex), \
                 f"Journey time extension ({journey_time_extension_for_shaving}%) exceeds available flexibility (min: {min(min_departure_flex, min_arrival_flex):.2f}%)"
     
-    # Calculate start_times and end_times if not provided directly        
-    start_times = [int(t * 60) - int(flex * total) 
-                      for t, total, flex in zip(times, total_time_list, departure_flexibility)]
-    end_times = [int(t * 60) + int((1 + flex) * total) 
-                    for t, total, flex in zip(times, total_time_list, arrival_flexibility)]
+    # Calculate start_times and end_times ensuring at least 1 second of flexibility
+    start_times = []
+    end_times = []
+    for i, (t, total, dep_flex, arr_flex) in enumerate(zip(times, total_time_list, departure_flexibility, arrival_flexibility)):
+        # Calculate departure flexibility in seconds, ensure at least 1 second
+        dep_flex_seconds = int(dep_flex * total)
+        if dep_flex_seconds < 1:
+            dep_flex_seconds = 1
+        
+        # Calculate arrival flexibility in seconds, ensure at least 1 second 
+        arr_flex_seconds = int(arr_flex * total)
+        if arr_flex_seconds < 1:
+            arr_flex_seconds = 1
+            
+        start_times.append(int(t * 60) - dep_flex_seconds)
+        end_times.append(int(t * 60) + total + arr_flex_seconds)
     
     # Setup environment
     devices, desired_profile, extended_times, generation_profile = setup_profile_steering_environment(
@@ -429,38 +447,6 @@ def perform_peak_shaving(
 ):
     """
     Perform peak shaving on the power profile by iteratively adjusting train power or journey times.
-    
-    Args:
-        final_profile: Current power profile to be peak-shaved
-        devices: List of devices in the system (battery, PV, trains)
-        delta_s_list: List of distance steps for trains
-        total_time_list: List of journey times for each train
-        speed_limit_file_list: List of speed limit files for trains
-        train_max_p_list: List of maximum power values for trains
-        times: Scheduled times for trains (in minutes)
-        departure_flexibility: Flexibility in departure times
-        arrival_flexibility: Flexibility in arrival times
-        start_times: Calculated start times for trains
-        end_times: Calculated end times for trains
-        interpolation_step: Time step for interpolation
-        time_start_horizon: Start time of simulation horizon
-        time_end_horizon: End time of simulation horizon
-        generation_profile: PV generation profile
-        e_min: Convergence threshold for profile steering
-        max_iters: Maximum iterations for profile steering
-        max_peak_shaving_iterations: Maximum iterations for peak shaving
-        peak_shaving_threshold: Power threshold for peak shaving
-        reduce_peak_power_for_shaving: Percentage to reduce power
-        journey_time_extension_for_shaving: Percentage to extend journey time
-        
-    Returns:
-        tuple: 
-            - final_profile: Updated power profile
-            - devices: Updated devices
-            - extended_times: Time points for extended horizon
-            - total_time_list: Updated journey times
-            - departure_flexibility: Updated departure flexibility
-            - arrival_flexibility: Updated arrival flexibility
     """
     if max(final_profile) <= peak_shaving_threshold or max_peak_shaving_iterations is None:
         # No peak shaving needed
@@ -471,6 +457,12 @@ def perform_peak_shaving(
         train_adjustment_counts = {}  # Track how many times each train has been adjusted
         previous_peak_power = float('inf')  # Track previous iteration's peak power
         extended_times = np.arange(time_start_horizon, max(end_times) + 1, 1)
+        
+        # Create a dictionary to store profiles for each iteration
+        iteration_profiles = {
+            'time': extended_times.tolist(),  # First column is time
+            'initial': final_profile.copy()   # Second column is the initial profile
+        }
 
         while (max(final_profile) > peak_shaving_threshold and 
             iteration < max_peak_shaving_iterations):
@@ -544,6 +536,9 @@ def perform_peak_shaving(
                         train_adjustment_counts[selected_train_idx] = current_count
                         adjustment_successful = True
                         
+                        # Store the profile after this successful iteration
+                        iteration_profiles[f'iter_{iteration}'] = final_profile.copy()
+                        
                 except RuntimeError as e:
                     print(f"Train {selected_train_idx+1} journey infeasible with reduced power: {e}")
                     
@@ -586,6 +581,9 @@ def perform_peak_shaving(
                             train_adjustment_counts[selected_train_idx] = current_count
                             adjustment_successful = True
                             
+                            # Store the profile after this successful iteration
+                            iteration_profiles[f'iter_{iteration}'] = final_profile.copy()
+                            
                             # Reduce departure and arrival flexibility when journey time extension is accepted
                             flex_reduction = journey_time_extension_for_shaving / 2 / 100  # Half of the journey time extension percentage
                             
@@ -600,7 +598,6 @@ def perform_peak_shaving(
                             print(f"Successfully adjusted Train {selected_train_idx+1} with both reduced power and extended journey time ({int(original_total_time)}s → {int(total_time_list[selected_train_idx])}s)")
                             print(f"Reduced flexibilities: departure {original_dep_flex:.3f} → {departure_flexibility[selected_train_idx]:.3f}, " +
                                 f"arrival {original_arr_flex:.3f} → {arrival_flexibility[selected_train_idx]:.3f}")
-                            
 
                     except RuntimeError as e:
                         print(f"Train {selected_train_idx+1} journey still infeasible after time extension: {e}")
@@ -611,11 +608,59 @@ def perform_peak_shaving(
                         infeasible_trains.add(selected_train_idx)
         
         # If we tried all trains and none worked
-        if not adjustment_successful:
+        if not adjustment_successful and iteration > 0:
             print("Peak shaving is infeasible - all trains at peak time would become infeasible with reduced power")
             print("Continuing with the last valid profile")
         
+        # Save the iteration profiles to CSV if peak shaving was performed
+        if iteration > 0:
+            save_peak_shaving_profiles_to_csv(iteration_profiles)
+            
         return final_profile, devices, extended_times, total_time_list, departure_flexibility, arrival_flexibility
+
+def save_peak_shaving_profiles_to_csv(iteration_profiles):
+    """
+    Save the peak shaving iteration profiles to a CSV file.
+    
+    Args:
+        iteration_profiles (dict): Dictionary containing the profiles for each iteration
+            with keys 'time', 'initial', 'iter_1', 'iter_2', etc.
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists("output_data"):
+        os.makedirs("output_data")
+    
+    # Generate a timestamp for the filename
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create filename
+    filename = f"output_data/peak_shaving_profiles_{timestamp}.csv"
+    
+    # Write to CSV file
+    with open(filename, 'w', newline='') as csvfile:
+        # Get all column names (iteration keys)
+        columns = sorted(iteration_profiles.keys(), 
+                         key=lambda x: int(x.split('_')[1]) if x.startswith('iter_') else 
+                         (0 if x == 'time' else -1 if x == 'initial' else float('inf')))
+        
+        writer = csv.writer(csvfile)
+        
+        # Write header
+        header = ['Time(s)'] + [f'Profile_{col}' if col.startswith('iter') else 
+                               'Initial_Profile' if col == 'initial' else col 
+                               for col in columns if col != 'time']
+        writer.writerow(header)
+        
+        # Write data rows
+        for i, time_value in enumerate(iteration_profiles['time']):
+            row = [time_value]
+            for col in columns:
+                if col != 'time':
+                    row.append(iteration_profiles[col][i])
+            writer.writerow(row)
+    
+    print(f"\nPeak shaving profiles saved to: {filename}")
 def compare_scenarios(scenario_params_list, scenario_labels):
     """
     Compare hub and battery profiles from multiple scenarios.
@@ -645,7 +690,7 @@ def compare_scenarios(scenario_params_list, scenario_labels):
         final_profiles.append(final)
         battery_profiles.append(battery)
         time_profiles.append(times)
-    
+        
     # Create plot with two subplots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
     # Plot hub profiles
@@ -667,6 +712,9 @@ def compare_scenarios(scenario_params_list, scenario_labels):
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     plt.tight_layout()
+    if not os.path.exists("output_plots"):
+        os.makedirs("output_plots")
+    plt.savefig("output_plots/scenario_comparison.png", dpi=600, bbox_inches='tight')
     plt.show()
 def generate_pv_profile(start_time_hour, duration_seconds, max_capacity_mw, 
                        weather_condition, day_of_year, random_seed=None):
@@ -753,21 +801,23 @@ def generate_pv_profile(start_time_hour, duration_seconds, max_capacity_mw,
 ##################################################################################
 #Scenario compare part 
 ##################################################################################
-scenario0 = {
+scenario1 = {
     # Train.py settings
-    'delta_s_list': [100] * 5, # Distance step for each train in meters (delta_s in Train.py)
-    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Wdn_Nij.csv", 
-        "SpeedLimit_Alm_Rij.csv", "SpeedLimit_Alm_Rij.csv"], # Speed limit files for each train
-    'train_max_p_list': [2159400]*5, # Maximum power capability of trains in Watts.
+    'delta_s_list': [100] * 16, # Distance step for each train in meters (delta_s in Train.py)
+    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv",
+                              "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv"], # Speed limit files for each train
+    'train_max_p_list': [2159400]*16, # Maximum power capability of trains in Watts.
     
     # Converting Train.py outputs from distance to time
     'interpolation_step': 1,
     
     # Timetable settings
-    'total_time_list': [300, 300, 360, 510, 510], # Total journey time for each train in seconds
-    'times': [2, 4, 6, 6, 8], # Scheduled times in minutes (the hashtags in --:##) of an hour
-    'departure_flexibility': [0.035]*5, # margin or flexibility for departure times
-    'arrival_flexibility': [0.035]*5,# margin or flexibility for arrival times
+    'total_time_list': [300, 360, 540, 360, 300, 360, 540, 360,300, 360, 540, 360,300, 360, 540, 360], # Total journey time for each train in seconds
+    'times': [0, 1, 2, 2, 4, 4, 5, 6, 7, 7, 7, 7, 9, 10, 10, 12], # Scheduled times in minutes (the hashtags in --:##) of an hour
+    'departure_flexibility': [0.001]*16, # margin or flexibility for departure times
+    'arrival_flexibility': [0.001]*16,# margin or flexibility for arrival times
     
     # Profile steering settings
     'time_start_horizon': 0,
@@ -778,7 +828,130 @@ scenario0 = {
     # PV generation profile
     'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
     'start_time_hour': 12, # Start time of the simulation in hours (0-23)
-    'max_capacity_mw': 2, # Maximum capacity of the PV installation in MW
+    'max_capacity_mw': 0.5, # Maximum capacity of the PV installation in MW
+    'weather_condition': 'cloudy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
+    'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
+    'random_seed': 1, # Seed for reproducible randomization, None for random
+
+    # Whether to return detailed output data and create plots per scenario
+    'detailed_output_per_scenario': False, # True for showing plots, otherwise no show and saves plots to files
+    
+    # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
+    'max_peak_shaving_iterations': None, # Maximum iterations for peak shaving, None means no peak shaving avoidance
+    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW. The limitation for catenary is 6 MW in Netherlands.
+    'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
+    'journey_time_extension_for_shaving': 0.001 # Percentage to extend journey time of the train that triggered peak shaving
+}
+scenario2 = {
+    # Train.py settings
+    'delta_s_list': [100] * 16, # Distance step for each train in meters (delta_s in Train.py)
+    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv",
+                              "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv"], # Speed limit files for each train
+    'train_max_p_list': [2159400]*16, # Maximum power capability of trains in Watts.
+    
+    # Converting Train.py outputs from distance to time
+    'interpolation_step': 1,
+    
+    # Timetable settings
+    'total_time_list': [300, 360, 540, 360, 300, 360, 540, 360,300, 360, 540, 360,300, 360, 540, 360], # Total journey time for each train in seconds
+    'times': [0, 1, 2, 2, 4, 4, 5, 6, 7, 7, 7, 7, 9, 10, 10, 12], # Scheduled times in minutes (the hashtags in --:##) of an hour
+    'departure_flexibility': [0.001]*16, # margin or flexibility for departure times
+    'arrival_flexibility': [0.001]*16,# margin or flexibility for arrival times
+    
+    # Profile steering settings
+    'time_start_horizon': 0,
+    'time_end_horizon': None, # None means calculate based on start and end times
+    'e_min': 0.001, # Minimum error for convergence in profile steering
+    'max_iters': 1000, # Maximum iterations for profile steering
+
+    # PV generation profile
+    'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
+    'start_time_hour': 12, # Start time of the simulation in hours (0-23)
+    'max_capacity_mw': 0.5, # Maximum capacity of the PV installation in MW
+    'weather_condition': 'cloudy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
+    'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
+    'random_seed': 1, # Seed for reproducible randomization, None for random
+
+    # Whether to return detailed output data and create plots per scenario
+    'detailed_output_per_scenario': False, # True for showing plots, otherwise no show and saves plots to files
+    
+    # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
+    'max_peak_shaving_iterations': 200, # Maximum iterations for peak shaving, None means no peak shaving avoidance
+    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW. The limitation for catenary is 6 MW in Netherlands.
+    'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
+    'journey_time_extension_for_shaving': 0.001 # Percentage to extend journey time of the train that triggered peak shaving
+}
+scenario3 = {
+    # Train.py settings
+    'delta_s_list': [100] * 16, # Distance step for each train in meters (delta_s in Train.py)
+    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv",
+                              "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv"], # Speed limit files for each train
+    'train_max_p_list': [2159400]*16, # Maximum power capability of trains in Watts.
+    
+    # Converting Train.py outputs from distance to time
+    'interpolation_step': 1,
+    
+    # Timetable settings
+    'total_time_list': [300, 360, 540, 360, 300, 360, 540, 360,300, 360, 540, 360,300, 360, 540, 360], # Total journey time for each train in seconds
+    'times': [0, 1, 2, 2, 4, 4, 5, 6, 7, 7, 7, 7, 9, 10, 10, 12], # Scheduled times in minutes (the hashtags in --:##) of an hour
+    'departure_flexibility': [0.1]*16, # margin or flexibility for departure times
+    'arrival_flexibility': [0.1]*16,# margin or flexibility for arrival times
+    
+    # Profile steering settings
+    'time_start_horizon': 0,
+    'time_end_horizon': None, # None means calculate based on start and end times
+    'e_min': 0.001, # Minimum error for convergence in profile steering
+    'max_iters': 1000, # Maximum iterations for profile steering
+
+    # PV generation profile
+    'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
+    'start_time_hour': 12, # Start time of the simulation in hours (0-23)
+    'max_capacity_mw': 0.5, # Maximum capacity of the PV installation in MW
+    'weather_condition': 'cloudy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
+    'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
+    'random_seed': 1, # Seed for reproducible randomization, None for random
+
+    # Whether to return detailed output data and create plots per scenario
+    'detailed_output_per_scenario': False, # True for showing plots, otherwise no show and saves plots to files
+    
+    # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
+    'max_peak_shaving_iterations': None, # Maximum iterations for peak shaving, None means no peak shaving avoidance
+    'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW. The limitation for catenary is 6 MW in Netherlands.
+    'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
+    'journey_time_extension_for_shaving': 1 # Percentage to extend journey time of the train that triggered peak shaving
+}
+scenario4 = {
+    # Train.py settings
+    'delta_s_list': [100] * 16, # Distance step for each train in meters (delta_s in Train.py)
+    'speed_limit_file_list': ["SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv",
+                              "SpeedLimit_Alm_Wdn.csv", "SpeedLimit_Wdn_Nij.csv", "SpeedLimit_Rij_Alm.csv", "SpeedLimit_Wdn_Rij.csv", 
+                              "SpeedLimit_Wdn_Alm.csv", "SpeedLimit_Nij_Wdn.csv", "SpeedLimit_Wdn_A_R.csv", "SpeedLimit_Rij_Wdn.csv"], # Speed limit files for each train
+    'train_max_p_list': [2159400]*16, # Maximum power capability of trains in Watts.
+    
+    # Converting Train.py outputs from distance to time
+    'interpolation_step': 1,
+    
+    # Timetable settings
+    'total_time_list': [300, 360, 540, 360, 300, 360, 540, 360,300, 360, 540, 360,300, 360, 540, 360], # Total journey time for each train in seconds
+    'times': [0, 1, 2, 2, 4, 4, 5, 6, 7, 7, 7, 7, 9, 10, 10, 12], # Scheduled times in minutes (the hashtags in --:##) of an hour
+    'departure_flexibility': [0.1]*16, # margin or flexibility for departure times
+    'arrival_flexibility': [0.1]*16,# margin or flexibility for arrival times
+    
+    # Profile steering settings
+    'time_start_horizon': 0,
+    'time_end_horizon': None, # None means calculate based on start and end times
+    'e_min': 0.001, # Minimum error for convergence in profile steering
+    'max_iters': 1000, # Maximum iterations for profile steering
+
+    # PV generation profile
+    'generation_profile' : 1, # None means default PV profile (posstivie flat profile)
+    'start_time_hour': 12, # Start time of the simulation in hours (0-23)
+    'max_capacity_mw': 0.5, # Maximum capacity of the PV installation in MW
     'weather_condition': 'cloudy', # Weather condition - 'sunny', 'partly_cloudy', 'cloudy', 'rainy'
     'day_of_year': 172, # Day of year (1-365) for seasonal adjustments
     'random_seed': 1, # Seed for reproducible randomization, None for random
@@ -787,16 +960,16 @@ scenario0 = {
     'detailed_output_per_scenario': True, # True for showing plots, otherwise no show and saves plots to files
     
     # For peak shaving (Note: These parameters are only used if peak shaving is enabled in the profile steering)
-    'max_peak_shaving_iterations': 2, # Maximum iterations for peak shaving, None means no peak shaving avoidance
+    'max_peak_shaving_iterations': 200, # Maximum iterations for peak shaving, None means no peak shaving avoidance
     'peak_shaving_threshold': 0.25, # The threshold for peak shaving, cut/flatten the peaks above MW. The limitation for catenary is 6 MW in Netherlands.
     'reduce_peak_power_for_shaving': 5, # Percentage to reduce peak power of the train that triggered peak shaving
-    'journey_time_extension_for_shaving': 0.75 # Percentage to extend journey time of the train that triggered peak shaving
+    'journey_time_extension_for_shaving': 1 # Percentage to extend journey time of the train that triggered peak shaving
 }
-
 if __name__ == "__main__":
     try:
-        compare_scenarios([scenario0],
-            ["0 iteration"])
+        compare_scenarios([scenario1,scenario2,scenario3,scenario4],
+            ["PS: 0% Flex, Peak Shaving: Off","PS: 0% Flex, Peak Shaving: On",
+             "PS: 5% Flex, Peak Shaving: Off","PS: 5% Flex, Peak Shaving: On"])
         
     except AssertionError as e:
         print(f"\n{e}")  # This will only print the assertion message

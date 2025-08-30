@@ -173,6 +173,12 @@ def plot_velocity_and_power_combined(file1, file2, file3, file4, distance, time,
 
     plt.title('Velocity and Power Comparison')
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
+    
+    # Save the plot
+    folder = "Strategies comparison plots"
+    os.makedirs(folder, exist_ok=True)
+    filename = os.path.join(folder, f"velocity_and_power_combined_{distance}km_{time}s_{RB}RB.png")
+    plt.savefig(filename, dpi=600, bbox_inches='tight', transparent=True)
 
 # Example usage
 if __name__ == "__main__":
@@ -182,8 +188,8 @@ if __name__ == "__main__":
     file4 = 'EETC_results.csv'
 
     distance = 10 # distance = input("Enter the distance (in km): ")
-    time = 390 # time = input("Enter the time (in s): ")
-    RB = 0.5 # RB = input("Enter the regenerative braking efficiency: ")
+    time = 360 # time = input("Enter the time (in s): ")
+    RB = 0.9 # RB = input("Enter the regenerative braking efficiency: ")
 
     plot_velocity_comparison(file1, file2, file3, file4, distance, time, RB)
     plot_power_comparison(file1, file2, file3, file4, distance, time, RB)

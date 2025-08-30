@@ -19,10 +19,12 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
     velocities = []
     powers = []
     accelerations = []
+    times = []  # Add time tracking
     distances.append(0)
     velocities.append(0)
     powers.append(0)
     accelerations.append(0)
+    times.append(0)  # Add initial time
 
     # Acceleration phase
     while v < target_velocity:
@@ -57,6 +59,7 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
         velocities.append(v * 3.6)
         powers.append(power / 1e6)
         accelerations.append(acceleration)
+        times.append(time)  # Track time
 
 
     # Estimate remaining time for cruising and braking
@@ -82,6 +85,7 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
             velocities.append(v * 3.6)
             powers.append(power / 1e6)
             accelerations.append(0)  # No acceleration during cruising
+            times.append(time)  # Track time
 
     # Braking phase
     while v > 0:
@@ -103,16 +107,18 @@ def calculate_combined_journey_exact_time(speed_limit,target_velocity, max_acc, 
         velocities.append(v * 3.6)
         powers.append((regenerative_power) / 1e6)
         accelerations.append(-deceleration)
+        times.append(time)  # Track time
 
     # Convert distance to kilometers
     distance_km = distance / 1000
 
     # print(f"Total time for journey: {time:.2f} seconds")")
     # print(f"Total distance for journey: {distance_km:.3f} km")")
+    total_energy = total_energy*1.037  # in kWh
     if plot == True:
         print(f"Total energy consumption: {total_energy:.3f} kWh")
         plot_velocity_and_power_combined(distances, velocities, powers, accelerations)
-        save_velocity_and_power_data("RMS_results.csv", distances, velocities, powers, accelerations, total_energy=total_energy)
+        save_velocity_and_power_data("RMS_results.csv", distances, velocities, powers, accelerations, times, total_energy=total_energy)
 
     # Return the total distance traveled
     if plot:
@@ -157,15 +163,15 @@ def plot_velocity_and_power_combined(distances, velocities, powers, acceleration
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
     # plt.show()
 
-def save_velocity_and_power_data(filepath, distances, velocities, powers, accelerations, total_energy=None):
+def save_velocity_and_power_data(filepath, distances, velocities, powers, accelerations, times, total_energy=None):
     """
     Saves velocity, power, and acceleration data to a file.
     Optionally appends total energy consumption at the end.
     """
     with open(filepath, 'w') as file:
-        file.write("Distance (km),Velocity (km/h),Power (MW),Acceleration (m/s²)\n")
-        for d, v, p, a in zip(distances, velocities, powers, accelerations):
-            file.write(f"{d:.3f},{v:.3f},{p:.3f},{a:.3f}\n")
+        file.write("Distance (km),Time (s),Velocity (km/h),Power (MW),Acceleration (m/s²)\n")
+        for d, t, v, p, a in zip(distances, times, velocities, powers, accelerations):
+            file.write(f"{d:.3f},{t:.2f},{v:.3f},{p:.3f},{a:.3f}\n")
         if total_energy is not None:
             file.write("\nTotal Energy Consumption (kWh):{:.3f}\n".format(total_energy))
 
@@ -175,7 +181,7 @@ if __name__ == "__main__":
     max_acc = 0.768  # Maximum acceleration in m/s²
     max_braking = 0.5  # Maximum braking in m/s²
     
-    m = 391000 * (1 + 0.06)  # Train mass in kg
+    m = 391000  # Train mass in kg
     C_d = 0.8  # Drag coefficient
     A = 3.02*4.67  # Frontal area in m²
     C = 0.002  # Rolling resistance coefficient
@@ -185,7 +191,7 @@ if __name__ == "__main__":
     
     braking_eff = 0.9  # Regenerative braking efficiency (80%)
     eta = 1  # Efficiency
-    total_time = 380  # Total time for the journey in seconds
+    total_time = 360  # Total time for the journey in seconds
     total_distance = 10000  # Total distance for the journey in m
     difference = 100000
     delta_t = 1  # Time step for calculations in seconds

@@ -14,16 +14,16 @@ class ElectricalParams:
     rho: float = 0.00003  # Ohms/m
     V0: int = 1800        # Operational Voltage (V)
     cat_voltage_bound: list = (1200, 1925)  # [min, max] catenary voltage
-    Consider_electrical_losses: int = 1     # 0: do not consider, 1: consider (but maybe it is double counting considering the constraint with voltage losses)
-    max_p_sub1: float = 30.0e6       # W
-    max_p_sub2: float = 30.0e6       # W
+    Consider_electrical_losses: int = 0     # 0: do not consider, 1: consider (but maybe it is double counting considering the constraint with voltage losses)
+    max_p_sub1: float = 10.0e6       # W
+    max_p_sub2: float = 10.0e6       # W
 @dataclass
 class TrainParams:
     m: float = 391000               # kg
     A: float = 3.02 * 4.67          # m^2
     C: float = 0.002                # Rolling resistance coefficient
     C_d: float = 0.8                # Drag coefficient
-    eta: float = 0.9               # Propulsion efficiency
+    eta: float = 1               # Propulsion efficiency
     braking_eff: float = 0.9       # Regenerative braking efficiency
     max_v: float = 44.444           # m/s
     max_acc: float = 0.768          # m/s^2
@@ -32,13 +32,13 @@ class TrainParams:
     mu_curve: float = 0.001         # Curve resistance coefficient
 @dataclass
 class SimulationParams:
-    total_time: float = 5.5 * 60    # sec
-    delta_s: int =       25        # m
+    total_time: float = int(360)    # sec
+    delta_s: int =       100        # m
     WindSpeed: float = 0            # m/s
     v_init: float = 0 / 3.6         # m/s
     t_init: float = 0 * 60          # s
     d_init: float = 0 * 1000        # m
-    speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimits\SpeedLimit_Wdn_Rij.csv"
+    speed_limit_csv_path = r"c:\Users\DarbandiH\OneDrive - University of Twente\Postdoc\Python\Train optimization problem\SpeedLimits\SpeedLimit_Alakiii.csv"
 
 electrical = ElectricalParams()
 train = TrainParams()
@@ -69,11 +69,12 @@ def main():
     else:
         print("No results to save or plot due to solver termination condition.")
 
-    ## Comparison of multiple scenarios, Uncomment the following lines to run the comparison with different max_p_sub1 values
-    # max_p_sub1_list = [.5e6, .75e6, 1e6, 2.5e6]
+    # Uncomment the following lines to run multiple scenarios with different max_p_sub1 values
+    # max_p_sub1_list = [1e6, 1.5e6, 2.5e6]  # Different maximum power values for substation 1
     # plot_multiple_scenarios(max_p_sub1_list)
 
-def collecting_gradients(simulation: SimulationParams, mode, max_gradient): # Generate track gradients profile. Modes: "const" for constant gradient, "randm" for random profile, "files" for extracting from a file.
+'Generate track gradients profile. Modes: "const" for constant gradient, "randm" for random profile, "files" for extracting from a file.'
+def collecting_gradients(simulation: SimulationParams, mode, max_gradient): 
     num_steps = int(simulation.distance_remaining // simulation.delta_s + 1)
     if mode == "const":
         gradients = [max_gradient] * num_steps
@@ -166,32 +167,28 @@ def Main(data, train: TrainParams, electrical: ElectricalParams, simulation: Sim
                 train.m * (model.v[d] - model.v[d - simulation.delta_s]) / (2 * simulation.delta_s / (model.v[d] + model.v[d - simulation.delta_s]))
                 ))**2)
         model.cons.add(model.Pg[d] == model.V[d] * ((electrical.V0 - model.V[d]) / (electrical.rho * d + 1e-9) + (electrical.V0 - model.V[d]) / (electrical.rho * (simulation.distance_remaining - d) + 1e-9)))  # Electrical power consumption
-        # model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))
-        # model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))
+        model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining*electrical.max_p_sub1/(simulation.distance_remaining - d + 1e-9)))  # Avoid division by zero
+        model.cons.add(abs(model.Pg[d]) <= (simulation.distance_remaining *electrical.max_p_sub2/(d + 1e-9)))  # Avoid division by zero
+
     solver = pyomo.SolverFactory('ipopt')
     solver.options['tol'] = 1e-8
     results = solver.solve(model, tee=False)
     if results.solver.termination_condition not in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
         raise RuntimeError(f"Infeasible during Main solve - {results.solver.termination_condition}")
-    return model, results.solver.termination_condition  # Add return statement
+    return model, results.solver.termination_condition 
 
 def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed_limits=None):
-    # Initialize lists for time, power, velocity, and acceleration
-    times, Pm_values, Pn_values, velocities, accelerations = [0], [0], [0], [0], [0]
-
-    # Iterate through the data keys to extract values
+    
+    times, Pm_values, Pn_values, velocities, accelerations = [0], [0], [0], [0], [0]    
     for idx, d in enumerate(data.keys()):
-        if idx == 0:  # Skip the first point (already initialized)
+        if idx == 0:
             continue
-
-        # Extract time, velocity, and power values
         t = model.t[d]()
         v = model.v[d]()
         pm = model.Pm[d]() / 1e6  # Convert to MW
-        pn = model.Pn[d]() / 1e6  # Convert to MW
+        pn = model.Pn[d]() / 1e6  
         vel_kmh = v * 3.6  # Convert velocity to km/h
-
-        # Append values to the lists
+        
         times.append(t)
         Pm_values.append(pm)
         Pn_values.append(pn)
@@ -207,33 +204,22 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
 
     # Create the plot
     fig, ax1 = plt.subplots(figsize=(12, 6))
-
-    # Plot power on the primary y-axis
     ax1.plot(times, [pm / train.eta - train.braking_eff * pn for pm, pn in zip(Pm_values, Pn_values)],
-             'b-', linewidth=2, label='Power (P)')
-    ax1.axhline(0, color='black', linewidth=1, linestyle='-')  # Add horizontal line at y=0
-    ax1.axvline(0, color='black', linewidth=2)  # y-axis at x=0
+             'b-', linewidth=2, label='Train Electrical Power')
+    ax1.axhline(0, color='black', linewidth=1, linestyle='-')
+    ax1.axvline(0, color='black', linewidth=2)
     ax1.set_xlim(left=0)
     ax1.set_xlabel('Time (s)', fontsize=16, fontweight='bold')
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
-
-    # Add grid lines for the y-axis
-    ax1.yaxis.grid(True, which='both', linestyle='--', alpha=0.5)
-    ax1.xaxis.grid(False)
-
-    # Add ticks for the y-axis
-    y_major_locator = MultipleLocator(0.2)  # Major ticks every 0.2 MW
-    y_minor_locator = AutoMinorLocator(4)   # 4 minor ticks between majors
+    ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
+    ax1.xaxis.grid(True, which='major', linestyle='--', alpha=0.5)
+    y_major_locator = MultipleLocator(0.5)  # every 0.2 MW
     ax1.yaxis.set_major_locator(y_major_locator)
-    ax1.yaxis.set_minor_locator(y_minor_locator)
 
-    # Create a second y-axis for velocity
     ax2 = ax1.twinx()
     ax2.plot(times, velocities, 'orange', linewidth=2, label='Velocity')
     ax2.set_ylabel('Velocity (km/h)', color='orange', fontsize=16, fontweight='bold')
-
-    # Overlay speed limit profile from CSV if provided
-    if speed_limits is not None:
+    if speed_limits is not None: # Overlay speed limit profile from CSV if provided
         interval_starts = list(speed_limits.keys())
         interval_ends = [speed_limits[d]['end'] for d in interval_starts]
         interval_speeds = [speed_limits[d]['speed'] for d in interval_starts]
@@ -248,22 +234,19 @@ def plot_Pm_and_Pn_profile_time(model, data, simulation: SimulationParams, speed
                 plot_speeds.append(interval_speeds[i])
             plot_times.append(t_end)
             plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
-        # Plot MRSP (speed limit) in a dark yellow color
-        ax2.step(plot_times, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='MRSP')
+        # Plot speed limit
+        ax2.step(plot_times, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='Speed Limit')
 
-    # Combine legends from both axes
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
-    # Add title with simulation details
     minutes, seconds = int(simulation.time_remaining // 60), int(simulation.time_remaining % 60)
     total_energy = calculate_energy_consumption(model, data, simulation, print_results=False)
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining / 1000} km, '
         f'Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
-    plt.grid(True, which='both', linestyle='--', alpha=0.5)
 
 def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limits=None):
     distances, power_values, Pg_values, Pb_values, velocities, accelerations = [0], [0], [0], [0], [0], [0]
@@ -277,14 +260,13 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
         velocities.append(model.v[d]() * 3.6)
         accelerations.append((model.v[d]() - model.v[prev_d]()) / (2 * simulation.delta_s / (model.v[d]() + model.v[prev_d]() + 1e-6)))
     fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.plot(distances, power_values, 'b-', linewidth=2, label='Train Power')
-    ax1.plot(distances, Pg_values, 'r-', linewidth=2, label='Grid Power')
+    ax1.plot(distances, power_values, 'b-', linewidth=2, label='Train Electrical Power')
     ax1.axhline(0, color='black', linewidth=1, linestyle='-')
     ax1.axvline(0, color='black', linewidth=2)
     ax1.set_xlim(left=0)
     ax1.set_xlabel('Distance (km)', fontsize=16, fontweight='bold')
     ax1.set_ylabel('Power (MW)', color='b', fontsize=16, fontweight='bold')
-    y_major_locator = MultipleLocator(0.25)
+    y_major_locator = MultipleLocator(0.5)
     ax1.yaxis.set_major_locator(y_major_locator)
     ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
     ax1.xaxis.grid(True, which='major', linestyle='--', alpha=0.5)
@@ -297,7 +279,6 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
     ax1.yaxis.set_label_position('left')
     ax1.yaxis.tick_left()
 
-    # Overlay speed limit profile from CSV if provided
     if speed_limits is not None:
         interval_starts = list(speed_limits.keys())
         interval_ends = [speed_limits[d]['end'] for d in interval_starts]
@@ -308,7 +289,7 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
             d_end = interval_ends[i]
             plot_distances.append(d_end / 1000)
             plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
-        ax2.step(plot_distances, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='MRSP')
+        ax2.step(plot_distances, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='Speed Limit')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -320,7 +301,6 @@ def plot_Pm_and_Pn_profile(model, data, simulation: SimulationParams, speed_limi
     plt.title(
         f'Train Power and Velocity Profile (S={simulation.distance_remaining/1000} km, Run time={minutes} min {seconds} sec, Energy={total_energy:.3f} kWh)',
         fontsize=18, fontweight='bold')
-    # plt.grid(True, which='both', linestyle='--', alpha=0.5)
     
 def plot_substation_powers(model, data, simulation: SimulationParams):
     distances, P_sub1_values, P_sub2_values, SoC_values = [], [], [], []
@@ -344,7 +324,6 @@ def plot_substation_powers(model, data, simulation: SimulationParams):
     ax1.yaxis.grid(True, which='major', linestyle='--', alpha=0.5)
     ax1.xaxis.grid(True)
 
-    # Combine legends from both axes
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right', fontsize=14)
 
@@ -483,7 +462,7 @@ def save_power_velocity_acceleration_to_csv(filepath, model, data, simulation: S
     """
     with open(filepath, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["Distance (km)", "Time (s)", "Velocity (km/h)", "Acceleration (m/s²)", "Power (MW)"])  # Header
+        writer.writerow(["Distance (km)", "Time (s)", "Velocity (km/h)", "Power (MW)", "Acceleration (m/s²)"])  # Header
         for d in data.keys():
             distance_km = d / 1000  # Convert distance to km
             time_s = model.t[d]()   # Time at this distance step
@@ -494,17 +473,22 @@ def save_power_velocity_acceleration_to_csv(filepath, model, data, simulation: S
             else:
                 prev_d = d - simulation.delta_s
                 acceleration = (model.v[d]() - model.v[prev_d]()) / (2 * simulation.delta_s / (model.v[d]() + model.v[prev_d]()))
-            writer.writerow([f"{distance_km:.3f}", f"{time_s:.2f}", f"{velocity_kmh:.3f}", f"{acceleration:.3f}", f"{power_mw:.3f}"])
+            writer.writerow([f"{distance_km:.3f}", f"{time_s:.2f}", f"{velocity_kmh:.3f}", f"{power_mw:.3f}", f"{acceleration:.3f}"])
         # Append total energy at the end if provided
         if total_energy is not None:
             writer.writerow([])
             writer.writerow(["Total Energy Consumption (kWh):" f"{total_energy:.3f}"])
 
-def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, train=None, electrical=None, simulation=None):
+def plot_multiple_scenarios(max_p_sub1_list, save_plots=True, output_folder="comparison_plots", dpi=300):
     """
-    Run multiple scenarios with different max_p_sub1 values and plot velocity and power profiles for comparison.
-    Each scenario's energy is shown in the legend.
-    MSRP (speed limit) is shown on velocity plots.
+    Run multiple scenarios with different max_p_sub1 values and plot comparison charts
+    for power, velocity, substation power, and voltage profiles.
+    
+    Parameters:
+        max_p_sub1_list: List of different max_p_sub1 values to compare
+        save_plots: Whether to save the plots to files (default: True)
+        output_folder: Folder to save plots in (default: "comparison_plots")
+        dpi: Resolution for saved plots (default: 300)
     """
     # Set font sizes to match plot_Pm_and_Pn_profile
     plt.rcParams.update({
@@ -519,167 +503,182 @@ def plot_multiple_scenarios(max_p_sub1_list, speed_limits_dict=None, data=None, 
         'font.serif': ['Times New Roman', 'Times', 'Computer Modern Roman', 'DejaVu Serif', 'serif']
     })
 
+    # Create output directory if saving is enabled
+    if save_plots:
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        print(f"Plots will be saved to {os.path.abspath(output_folder)}")
+    
+    # Process speed limits and setup data structure
+    speed_limits_dict, speed_limit_array, distance_remaining = process_speed_limits(simulation)
+    gradients = collecting_gradients(simulation, mode="const", max_gradient=0.0)
+    data = {0: {'grade': gradients[0], 'speed_limit': speed_limit_array[0]}}
+    for i in range(1, int(simulation.distance_remaining / simulation.delta_s) + 1):
+        data[i * simulation.delta_s] = {
+            'grade': gradients[min(i, len(gradients) - 1)],
+            'speed_limit': speed_limit_array[min(i, len(speed_limit_array) - 1)]
+        }
+    
+    # Run scenarios with different max_p_sub1 values
     scenario_results = []
     for max_p_sub1_val in max_p_sub1_list:
-        # Copy simulation object and set max_p_sub1 for this scenario
-        sim_scenario = SimulationParams(
-            total_time=simulation.total_time,
-            delta_s=simulation.delta_s,
+        # Create a copy of electrical params with different max_p_sub1
+        electrical_scenario = ElectricalParams(
+            rho=electrical.rho,
+            V0=electrical.V0,
+            cat_voltage_bound=electrical.cat_voltage_bound,
+            Consider_electrical_losses=electrical.Consider_electrical_losses,
             max_p_sub1=max_p_sub1_val,
-            max_p_sub2=electrical.max_p_sub2,
-            WindSpeed=simulation.WindSpeed,
-            v_init=simulation.v_init,
-            t_init=simulation.t_init,
-            d_init=simulation.d_init
+            max_p_sub2=electrical.max_p_sub2
+
         )
-        sim_scenario.time_remaining = sim_scenario.total_time - sim_scenario.t_init
-        sim_scenario.distance_remaining = simulation.distance_remaining
 
-        model, termination_condition = Main(
-            sim_scenario.distance_remaining, sim_scenario.delta_s, data, train, electrical, sim_scenario
-        )
-        if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
-            total_energy = calculate_energy_consumption(model, data, simulation, print_results=False)
-            scenario_results.append({
-                'max_p_sub1': max_p_sub1_val,
-                'model': model,
-                'energy': total_energy,
-                'sim': sim_scenario
-            })
-        else:
-            print(f"Scenario max_p_sub1={max_p_sub1_val}: No results due to solver termination condition.")
+        # Run the model with these parameters
+        print(f"Running scenario with max_p_sub1 = {max_p_sub1_val/1e6} MW...")
+        try:
+            model, termination_condition = Main(data, train, electrical_scenario, simulation)
+            
+            if termination_condition in [pyomo.TerminationCondition.optimal, pyomo.TerminationCondition.locallyOptimal]:
+                total_energy = calculate_energy_consumption(model, data, simulation, print_results=False)
+                scenario_results.append({
+                    'max_p_sub1': max_p_sub1_val,
+                    'model': model,
+                    'energy': total_energy
+                })
+            else:
+                print(f"Scenario max_p_sub1={max_p_sub1_val/1e6} MW: No optimal solution found.")
+        except Exception as e:
+            print(f"Error in scenario max_p_sub1={max_p_sub1_val/1e6} MW: {str(e)}")
 
-    # Plot velocity profiles (time)
-    plt.figure(figsize=(12, 6))
+    if not scenario_results:
+        print("No valid scenarios to plot.")
+        return
+
+    # 1. Plot velocity profiles (distance)
+    fig1 = plt.figure(figsize=(12, 6))
     for result in scenario_results:
         model = result['model']
-        sim = result['sim']
-        times = []
-        velocities = []
-        for idx, d in enumerate(data.keys()):
-            t = model.t[d]()
-            v = model.v[d]()
-            vel_kmh = v * 3.6
-            if idx == 0 or t == 0:
-                times.append(0)
-                velocities.append(0)
-            else:
-                times.append(t)
-                velocities.append(vel_kmh)
-        label = f"max_p_sub1={result['max_p_sub1']/1e6:.2f} MW, Energy={result['energy']:.3f} kWh"
-        plt.plot(times, velocities, linewidth=2, label=label)
-    # Add MSRP (speed limit) profile to velocity vs time plot
-    if speed_limits_dict is not None and scenario_results:
-        interval_starts = list(speed_limits_dict.keys())
-        interval_ends = [speed_limits[d]['end'] for d in interval_starts]
-        interval_speeds = [speed_limits[d]['speed'] for d in interval_starts]
-        plot_times = []
-        plot_speeds = []
-        # Use the first model for time mapping
-        model = scenario_results[0]['model']
-        for i in range(len(interval_starts)):
-            d_start = interval_starts[i]
-            d_end = interval_ends[i]
-            d_keys = list(data.keys())
-            t_start = model.t[d_keys[min(range(len(d_keys)), key=lambda j: abs(d_keys[j] - d_start))]]()
-            t_end = model.t[d_keys[min(range(len(d_keys)), key=lambda j: abs(d_keys[j] - d_end))]]()
-            if i == 0:
-                plot_times.append(t_start)
-                plot_speeds.append(interval_speeds[i])
-            plot_times.append(t_end)
-            plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
-        plt.step(plot_times, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='MRSP')
-    plt.xlabel('Time (s)', fontsize=16, fontweight='bold')
-    plt.ylabel('Velocity (km/h)', fontsize=16, fontweight='bold')
-    plt.title('Velocity Profile Comparison')
-    plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.5)
-
-    # Plot power profiles (time)
-    plt.figure(figsize=(12, 6))
-    for result in scenario_results:
-        model = result['model']
-        times = []
-        powers = []
-        for idx, d in enumerate(data.keys()):
-            t = model.t[d]()
-            pm = model.Pm[d]()
-            pn = model.Pn[d]()
-            power = (pm - train.braking_eff * pn) / 1e6  # MW
-            if idx == 0 or t == 0:
-                times.append(0)
-                powers.append(0)
-            else:
-                times.append(t)
-                powers.append(power)
-        label = f"max_p_sub1={result['max_p_sub1']/1e6:.2f} MW, Energy={result['energy']:.3f} kWh"
-        plt.plot(times, powers, linewidth=2, label=label)
-    plt.xlabel('Time (s)', fontsize=16, fontweight='bold')
-    plt.ylabel('Power (MW)', fontsize=16, fontweight='bold')
-    plt.title('Power Profile Comparison')
-    plt.legend()
-    plt.grid(True, which='both', linestyle='--', alpha=0.5)
-
-    # Plot velocity profiles (distance)
-    plt.figure(figsize=(12, 6))
-    for result in scenario_results:
-        model = result['model']
-        distances = []
-        velocities = []
-        for idx, d in enumerate(data.keys()):
-            v = model.v[d]()
-            vel_kmh = v * 3.6
-            if idx == 0 or d == 0:
-                distances.append(0)
-                velocities.append(0)
-            else:
-                distances.append(d/1000)
-                velocities.append(vel_kmh)
-        label = f"max_p_sub1={result['max_p_sub1']/1e6:.2f} MW, Energy={result['energy']:.3f} kWh"
+        distances, velocities = [], []
+        for d in data.keys():
+            distances.append(d / 1000)  # Convert distance to km
+            velocities.append(model.v[d]() * 3.6)  # Convert velocity to km/h
+        label = f"Substation 1 Power Limit={result['max_p_sub1']/1e6:.2f} MW, Energy Consumption={result['energy']:.3f} kWh"
         plt.plot(distances, velocities, linewidth=2, label=label)
-    # Add MSRP (speed limit) profile to velocity vs distance plot
-    if speed_limits_dict is not None:
-        interval_starts = list(speed_limits_dict.keys())
-        interval_ends = [speed_limits[d]['end'] for d in interval_starts]
-        interval_speeds = [speed_limits[d]['speed'] for d in interval_starts]
-        plot_distances = []
-        plot_speeds = []
-        for i in range(len(interval_starts)):
-            if i == 0:
-                plot_distances.append(interval_starts[i] / 1000)
-                plot_speeds.append(interval_speeds[i])
-            plot_distances.append(interval_ends[i] / 1000)
-            plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
-        plt.step(plot_distances, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='MRSP')
+    
+    # Add speed limit profile
+    interval_starts = list(speed_limits_dict.keys())
+    interval_ends = [speed_limits_dict[d]['end'] for d in interval_starts]
+    interval_speeds = [speed_limits_dict[d]['speed'] for d in interval_starts]
+    plot_distances, plot_speeds = [], []
+    for i in range(len(interval_starts)):
+        if i == 0:
+            plot_distances.append(interval_starts[i] / 1000)
+            plot_speeds.append(interval_speeds[i])
+        plot_distances.append(interval_ends[i] / 1000)
+        plot_speeds.append(interval_speeds[i + 1] if i + 1 < len(interval_speeds) else interval_speeds[i])
+    plt.step(plot_distances, plot_speeds, where='post', color='#b58900', linewidth=2, linestyle='--', label='Speed Limit')
+    
     plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
     plt.ylabel('Velocity (km/h)', fontsize=16, fontweight='bold')
-    plt.title('Velocity Profile Comparison (Distance)')
-    plt.legend()
+    plt.title('Velocity Profile Comparison', fontsize=18, fontweight='bold')
     plt.grid(True, which='both', linestyle='--', alpha=0.5)
-
-    # Plot power profiles (distance)
-    plt.figure(figsize=(12, 6))
+    plt.legend()
+    
+    if save_plots:
+        velocity_plot_path = os.path.join(output_folder, 'velocity_comparison.png')
+        plt.savefig(velocity_plot_path, dpi=dpi, bbox_inches='tight')
+        print(f"Saved velocity comparison plot to {velocity_plot_path}")
+    
+    # 2. Plot power profiles (distance)
+    fig2 = plt.figure(figsize=(12, 6))
     for result in scenario_results:
         model = result['model']
-        distances = []
-        powers = []
-        for idx, d in enumerate(data.keys()):
-            pm = model.Pm[d]()
-            pn = model.Pn[d]()
-            power = (pm - train.braking_eff * pn) / 1e6  # MW
-            if idx == 0 or d == 0:
-                distances.append(0)
-                powers.append(0)
-            else:
-                distances.append(d/1000)
-                powers.append(power)
-        label = f"max_p_sub1={result['max_p_sub1']/1e6:.2f} MW, Energy={result['energy']:.3f} kWh"
+        distances, powers = [], []
+        for d in data.keys():
+            distances.append(d / 1000)
+            power = (model.Pm[d]()/train.eta - model.Pn[d]()*train.braking_eff) / 1e6  # Convert to MW
+            powers.append(power)
+        label = f"Substation 1 Power Limit={result['max_p_sub1']/1e6:.2f} MW, Energy Consumption={result['energy']:.3f} kWh"
         plt.plot(distances, powers, linewidth=2, label=label)
+    
+    plt.axhline(0, color='black', linewidth=1, linestyle='-')
     plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
     plt.ylabel('Power (MW)', fontsize=16, fontweight='bold')
-    plt.title('Power Profile Comparison (Distance)')
-    plt.legend()
+    plt.title('Train Electrical Power Profile Comparison', fontsize=18, fontweight='bold')
     plt.grid(True, which='both', linestyle='--', alpha=0.5)
+    plt.legend()
+    
+    if save_plots:
+        power_plot_path = os.path.join(output_folder, 'power_comparison.png')
+        plt.savefig(power_plot_path, dpi=dpi, bbox_inches='tight')
+        print(f"Saved power comparison plot to {power_plot_path}")
+    
+    # 3. Plot substation power profiles (distance)
+    fig3 = plt.figure(figsize=(12, 6))
+    for result in scenario_results:
+        model = result['model']
+        distances, p_sub1_values, p_sub2_values = [], [], []
+        for d in data.keys():
+            if d == 0:
+                continue
+            distances.append(d / 1000)
+            p_sub1 = (simulation.distance_remaining - d) * model.Pg[d]() * 1e-6 / simulation.distance_remaining
+            p_sub2 = d * model.Pg[d]() * 1e-6 / simulation.distance_remaining
+            p_sub1_values.append(p_sub1)
+            p_sub2_values.append(p_sub2)
+        
+        label1 = f"Substation 1, Limit={result['max_p_sub1']/1e6:.2f} MW"
+        label2 = f"Substation 2, Limit={electrical.max_p_sub2/1e6:.2f} MW"
+        plt.plot(distances, p_sub1_values, linewidth=2, label=label1)
+        plt.plot(distances, p_sub2_values, linewidth=2, linestyle='--', label=label2)
+    
+    plt.axhline(0, color='black', linewidth=1, linestyle='-')
+    plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
+    plt.ylabel('Power (MW)', fontsize=16, fontweight='bold')
+    plt.title('Substation Power Profile Comparison', fontsize=18, fontweight='bold')
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
+    plt.legend()
+    
+    if save_plots:
+        substation_plot_path = os.path.join(output_folder, 'substation_comparison.png')
+        plt.savefig(substation_plot_path, dpi=dpi, bbox_inches='tight')
+        print(f"Saved substation power comparison plot to {substation_plot_path}")
+    
+    # 4. Plot voltage profiles (distance)
+    fig4 = plt.figure(figsize=(12, 6))
+    for result in scenario_results:
+        model = result['model']
+        distances, voltages = [], []
+        for d in data.keys():
+            distances.append(d / 1000)
+            voltages.append(model.V[d]())
+        label = f"max_p_sub1={result['max_p_sub1']/1e6:.2f} MW"
+        plt.plot(distances, voltages, linewidth=2, label=label)
+    
+    plt.xlabel('Distance (km)', fontsize=16, fontweight='bold')
+    plt.ylabel('Voltage (V)', fontsize=16, fontweight='bold')
+    plt.title('Voltage Profile Comparison', fontsize=18, fontweight='bold')
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
+    plt.legend()
+    
+    if save_plots:
+        voltage_plot_path = os.path.join(output_folder, 'voltage_comparison.png')
+        plt.savefig(voltage_plot_path, dpi=dpi, bbox_inches='tight')
+        print(f"Saved voltage comparison plot to {voltage_plot_path}")
+    
+    # Also save a summary file with the scenario information
+    if save_plots:
+        summary_path = os.path.join(output_folder, 'scenario_summary.txt')
+        with open(summary_path, 'w') as f:
+            f.write(f"Scenario Comparison Summary\n")
+            f.write(f"=========================\n\n")
+            f.write(f"Total Distance: {simulation.distance_remaining/1000:.2f} km\n")
+            f.write(f"Maximum Run Time: {simulation.time_remaining/60:.2f} min\n\n")
+            f.write(f"Scenarios:\n")
+            for result in scenario_results:
+                f.write(f"- Substation 1 Power Limit: {result['max_p_sub1']/1e6:.2f} MW, Energy: {result['energy']:.3f} kWh\n")
+        print(f"Saved scenario summary to {summary_path}")
+    
     plt.show()
 
 if __name__ == "__main__":

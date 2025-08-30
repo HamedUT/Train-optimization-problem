@@ -1,0 +1,10 @@
+Scenario Comparison Summary
+=========================
+
+Total Distance: 14.00 km
+Maximum Run Time: 9.50 min
+
+Scenarios:
+- Substation 1 Power Limit: 1.00 MW, Energy: 69.982 kWh
+- Substation 1 Power Limit: 1.50 MW, Energy: 66.758 kWh
+- Substation 1 Power Limit: 2.50 MW, Energy: 65.847 kWh
